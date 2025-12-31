@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - NSW Fuel Monitor{% endblock %}
+
+{% block content %}
+<div class="container-xxl">
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="h2 mb-1">
+                <i class="bi bi-speedometer2"></i>
+                Dashboard
+            </h1>
+            <p class="text-secondary mb-0">Current fuel prices and trends</p>
+        </div>
+        <div class="col-auto">
+            <button class="btn btn-primary" onclick="refreshPrices()">
+                <i class="bi bi-arrow-clockwise"></i>
+                Refresh
+            </button>
+        </div>
+    </div>
+    
+    <!-- Current Prices -->
+    <div class="row" id="pricesContainer">
+        <div class="col-12 text-center py-5">
+            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+            <p class="text-secondary mt-3">Loading fuel prices...</p>
+        </div>
+    </div>
+    
+    <!-- Price Charts -->
+    <div class="row mt-4" id="chartsContainer" style="display: none;">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-graph-up"></i> Price Trends</span>
+                    <div>
+                        <select class="form-select form-select-sm d-inline-block w-auto" id="chartStation">
+                            <option value="">Select Station</option>
+                        </select>
+                        <select class="form-select form-select-sm d-inline-block w-auto ms-2" id="chartFuelType">
+                            <option value="">Select Fuel Type</option>
+                        </select>
+                        <select class="form-select form-select-sm d-inline-block w-auto ms-2" id="chartDays">
+                            <option value="1">Last 24 hours</option>
+                            <option value="7" selected>Last 7 days</option>
+                            <option value="30">Last 30 days</option>
+                            <option value="90">Last 90 days</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <canvas id="priceChart" height="80"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let priceChart = null;
+    let stationsData = [];
+    
+    // Load current prices on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        loadCurrentPrices();
+    });
+    
+    async function loadCurrentPrices() {
+        try {
+            const response = await fetch('/api/prices/current');
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to load prices');
+            }
+            
+            stationsData = data.prices;
+            displayPrices(data.prices);
+            populateChartFilters(data.prices);
+        } catch (error) {
+            console.error('Error loading prices:', error);
+            document.getElementById('pricesContainer').innerHTML = `
+                <div class="col-12">
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        Failed to load fuel prices: ${error.message}
+                    </div>
+                </div>
+            `;
+        }
+    }
+    
+    function displayPrices(prices) {
+        const container = document.getElementById('pricesContainer');
+        
+        if (prices.length === 0) {
+            container.innerHTML = `
+                <div class="col-12">
+                    <div class="alert alert-warning">
+                        <i class="bi bi-info-circle-fill me-2"></i>
+                        No stations configured. Go to <a href="/stations" class="alert-link">Stations</a> to add some.
+                    </div>
+                </div>
+            `;
+            return;
+        }
+        
+        let html = '';
+        
+        for (const station of prices) {
+            html += `
+                <div class="col-12 mb-4">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="station-name">${station.station_name}</div>
+                            <div class="station-address">${station.station_address}</div>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+            `;
+            
+            const fuelTypes = Object.keys(station.prices);
+            if (fuelTypes.length === 0) {
+                html += `
+                    <div class="col-12">
+                        <p class="text-secondary mb-0">No prices available</p>
+                    </div>
+                `;
+            } else {
+                for (const fuelType in station.prices) {
+                    const price = station.prices[fuelType];
+                    const priceInDollars = (price / 100).toFixed(1);
+                    
+                    html += `
+                        <div class="col-md-3 col-sm-4 col-6">
+                            <div class="price-card">
+                                <div class="price-label">${fuelType}</div>
+                                <div class="price-value">${priceInDollars}¢</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+            
+            html += `
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        container.innerHTML = html;
+        
+        // Show charts section if we have data
+        document.getElementById('chartsContainer').style.display = 'block';
+    }
+    
+    function populateChartFilters(prices) {
+        const stationSelect = document.getElementById('chartStation');
+        const fuelTypeSelect = document.getElementById('chartFuelType');
+        
+        // Clear existing options
+        stationSelect.innerHTML = '<option value="">Select Station</option>';
+        fuelTypeSelect.innerHTML = '<option value="">Select Fuel Type</option>';
+        
+        // Populate stations
+        for (const station of prices) {
+            const option = document.createElement('option');
+            option.value = station.station_id;
+            option.textContent = station.station_name;
+            stationSelect.appendChild(option);
+        }
+        
+        // Add event listeners
+        stationSelect.addEventListener('change', updateFuelTypeOptions);
+        fuelTypeSelect.addEventListener('change', loadPriceHistory);
+        document.getElementById('chartDays').addEventListener('change', loadPriceHistory);
+        
+        // Select first station by default
+        if (prices.length > 0) {
+            stationSelect.value = prices[0].station_id;
+            updateFuelTypeOptions();
+        }
+    }
+    
+    function updateFuelTypeOptions() {
+        const stationSelect = document.getElementById('chartStation');
+        const fuelTypeSelect = document.getElementById('chartFuelType');
+        const selectedStationId = parseInt(stationSelect.value);
+        
+        fuelTypeSelect.innerHTML = '<option value="">Select Fuel Type</option>';
+        
+        const station = stationsData.find(s => s.station_id === selectedStationId);
+        if (station) {
+            const fuelTypes = Object.keys(station.prices);
+            for (const fuelType of fuelTypes) {
+                const option = document.createElement('option');
+                option.value = fuelType;
+                option.textContent = fuelType;
+                fuelTypeSelect.appendChild(option);
+            }
+            
+            // Select first fuel type by default
+            if (fuelTypes.length > 0) {
+                fuelTypeSelect.value = fuelTypes[0];
+                loadPriceHistory();
+            }
+        }
+    }
+    
+    async function loadPriceHistory() {
+        const stationId = document.getElementById('chartStation').value;
+        const fuelType = document.getElementById('chartFuelType').value;
+        const days = document.getElementById('chartDays').value;
+        
+        if (!stationId || !fuelType) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/api/prices/history?station_id=${stationId}&fuel_type=${fuelType}&days=${days}`);
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to load price history');
+            }
+            
+            displayPriceChart(data.history, fuelType);
+        } catch (error) {
+            console.error('Error loading price history:', error);
+            showToast('Failed to load price history: ' + error.message, 'error');
+        }
+    }
+    
+    function displayPriceChart(history, fuelType) {
+        const ctx = document.getElementById('priceChart').getContext('2d');
+        
+        if (priceChart) {
+            priceChart.destroy();
+        }
+        
+        const labels = history.map(h => new Date(h.time).toLocaleString());
+        const prices = history.map(h => h.price / 100); // Convert to dollars
+        
+        priceChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: fuelType + ' Price (cents/L)',
+                    data: prices,
+                    borderColor: 'rgb(59, 130, 246)',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: {
+                            color: '#f1f5f9'
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                scales: {
+                    x: {
+                        display: true,
+                        grid: {
+                            color: '#334155'
+                        },
+                        ticks: {
+                            color: '#94a3b8',
+                            maxTicksLimit: 10
+                        }
+                    },
+                    y: {
+                        display: true,
+                        grid: {
+                            color: '#334155'
+                        },
+                        ticks: {
+                            color: '#94a3b8',
+                            callback: function(value) {
+                                return value.toFixed(1) + '¢';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    function refreshPrices() {
+        document.getElementById('pricesContainer').innerHTML = `
+            <div class="col-12 text-center py-5">
+                <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+                <p class="text-secondary mt-3">Loading fuel prices...</p>
+            </div>
+        `;
+        loadCurrentPrices();
+    }
+</script>
+{% endblock %}

@@ -154,6 +154,22 @@ def main():
         help='Run once and exit (no scheduling)'
     )
     parser.add_argument(
+        '--web',
+        action='store_true',
+        help='Run web UI server'
+    )
+    parser.add_argument(
+        '--host',
+        default='0.0.0.0',
+        help='Web server host (default: 0.0.0.0)'
+    )
+    parser.add_argument(
+        '--port',
+        default=5000,
+        type=int,
+        help='Web server port (default: 5000)'
+    )
+    parser.add_argument(
         '--log-level',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
         help='Override log level from config'
@@ -193,7 +209,11 @@ def main():
     # Create and run the application
     app = FuelApp(config)
 
-    if args.once:
+    if args.web:
+        _LOGGER.info("Starting web UI server on %s:%d", args.host, args.port)
+        from web_app import run_web_app
+        run_web_app(config, host=args.host, port=args.port, debug=False)
+    elif args.once:
         _LOGGER.info("Running in single-shot mode")
         success = app.run_once()
         sys.exit(0 if success else 1)

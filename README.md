@@ -6,11 +6,13 @@ A standalone Python application that monitors NSW fuel station prices and stores
 
 - 📊 Fetches real-time fuel prices from NSW FuelCheck API
 - 💾 Stores price data in InfluxDB for historical analysis
-- 📈 Track price changes over time
+- 🌐 Modern Web UI for visualizing data and managing stations
+- 📈 Track price changes over time with interactive charts
 - ⚙️ Configurable polling intervals
 - 🏪 Monitor multiple fuel stations simultaneously
 - ⛽ Support for all fuel types (E10, U91, P95, P98, DL, etc.)
 - 🔄 Automatic scheduled updates
+- 🎨 Clean, modern interface inspired by speedtest-tracker
 
 ## Requirements
 
@@ -74,7 +76,24 @@ Station IDs can be found from:
 
 ## Usage
 
-### Run with scheduled updates (recommended)
+### Run the Web UI (recommended)
+
+Start the web interface to visualize data and manage stations:
+```bash
+python main.py --web
+```
+
+The web UI will be available at `http://localhost:5000` by default. You can customize the host and port:
+```bash
+python main.py --web --host 0.0.0.0 --port 8080
+```
+
+The Web UI provides:
+- **Dashboard**: View current fuel prices and historical trends with interactive charts
+- **Stations**: Add, edit, and remove monitored fuel stations through the interface
+- **Settings**: View your InfluxDB configuration and system information
+
+### Run with scheduled updates (background monitoring)
 
 Monitor fuel prices continuously with automatic updates:
 ```bash
@@ -175,7 +194,24 @@ from(bucket: "fuel_prices")
 
 ## Visualizing Data
 
-You can visualize the historical price data using:
+### Web UI (Built-in)
+
+The application includes a modern web interface for visualizing fuel prices:
+
+```bash
+python main.py --web
+```
+
+Features:
+- **Real-time Price Display**: View current fuel prices for all configured stations
+- **Interactive Charts**: Visualize price trends over time with Chart.js
+- **Station Management**: Add and remove stations directly from the UI
+- **Responsive Design**: Works on desktop, tablet, and mobile devices
+- **Dark Theme**: Easy on the eyes with a modern dark interface
+
+### External Tools
+
+You can also visualize the historical price data using:
 - **InfluxDB UI** - Built-in dashboards and graphs
 - **Grafana** - Create custom dashboards with InfluxDB data source
 - **Chronograf** - InfluxData's visualization tool
