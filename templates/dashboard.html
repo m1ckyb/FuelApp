@@ -139,7 +139,7 @@
             } else {
                 for (const fuelType in station.prices) {
                     const price = station.prices[fuelType];
-                    const priceInCents = (price / 100).toFixed(1);
+                    const priceInCents = price.toFixed(1);
                     
                     html += `
                         <div class="col-md-3 col-sm-4 col-6">
@@ -251,7 +251,7 @@
         }
         
         const labels = history.map(h => new Date(h.time).toLocaleString());
-        const prices = history.map(h => h.price / 100); // Convert to dollars
+        const prices = history.map(h => h.price);
         
         priceChart = new Chart(ctx, {
             type: 'line',
