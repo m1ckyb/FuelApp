@@ -28,6 +28,7 @@ setup(
         'fuel_data',
         'influxdb_writer',
         'constants',
+        'quick_start',
     ],
     install_requires=requirements,
     entry_points={
