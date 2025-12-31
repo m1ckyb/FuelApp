@@ -341,6 +341,8 @@ def get_config():
         'influxdb_bucket': config.influxdb_bucket,
         'influxdb_token': '***' if config.influxdb_token else '',
         'poll_interval': config.poll_interval,
+        'cron_schedule': config.cron_schedule,
+        'timezone': config.timezone,
         'log_level': config.log_level
     })
 
@@ -376,6 +378,12 @@ def update_config():
             config.poll_interval = poll_interval
         except ValueError:
             return jsonify({'error': 'Invalid poll interval'}), 400
+            
+    if 'cron_schedule' in data:
+        config.cron_schedule = data['cron_schedule']
+        
+    if 'timezone' in data:
+        config.timezone = data['timezone']
     
     if 'log_level' in data:
         log_level = data['log_level'].upper()

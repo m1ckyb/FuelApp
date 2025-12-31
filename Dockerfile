@@ -1,30 +1,52 @@
-# Use Python 3.12 slim image as base
-FROM python:3.12-slim
+# --- Builder Stage ---
+FROM python:3.12-alpine as builder
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# Install build dependencies
+RUN apk add --no-cache \
     gcc \
+    musl-dev \
+    linux-headers \
+    libffi-dev \
     curl \
-    gnupg \
-    && mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://repos.influxdata.com/influxdata-archive_compat.key | gpg --dearmor -o /etc/apt/keyrings/influxdata-archive_compat.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/influxdata-archive_compat.gpg] https://repos.influxdata.com/debian stable main" | tee /etc/apt/sources.list.d/influxdata.list \
-    && apt-get update \
-    && apt-get install -y influxdb2-cli \
-    && rm -rf /var/lib/apt/lists/*
+    tzdata
 
-# Copy requirements file
+# Install InfluxDB CLI
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; elif [ "$ARCH" = "aarch64" ]; then ARCH="arm64"; fi && \
+    curl -fSL https://download.influxdata.com/influxdb/releases/influxdb2-client-2.7.3-linux-${ARCH}.tar.gz | tar xz && \
+    mv influx /usr/local/bin/
+
+# Install Python dependencies into a virtual env
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+
+# --- Runner Stage ---
+FROM python:3.12-alpine
+
+WORKDIR /app
+
+# Install runtime dependencies only
+RUN apk add --no-cache \
+    supervisor \
+    curl \
+    tzdata
+
+# Copy virtual env from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy influx binary from builder
+COPY --from=builder /usr/local/bin/influx /usr/local/bin/influx
 
 # Copy application files
 COPY run.py .
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY app/ ./app/
 COPY templates/ ./templates/
 
@@ -37,5 +59,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose port for web UI
 EXPOSE 5000
 
-# Default command - run web UI with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "--access-logfile", "-", "--error-logfile", "-", "app.web:create_app()"]
+# Default command - run supervisor to manage processes
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

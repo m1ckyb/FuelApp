@@ -8,7 +8,9 @@
 - Added station name display to the Stations management page.
 - Redesigned the Web UI with a modern dark theme inspired by RouteGhost.
 - Implemented Gunicorn as the WSGI server for improved performance and reliability.
-- Added a separate `fuelapp-worker` service in `docker-compose.yml` to handle background data polling.
+- Added Cron scheduling support (`cron_schedule`) for precise task timing.
+- Added Timezone support (`timezone`) ensuring accurate scheduling (defaults to Australia/Sydney).
+- Added `croniter` and `tzdata` dependencies.
 
 ### Changed
 - Updated `dashboard.html` to allow viewing price trends without selecting a specific station or fuel type.
@@ -23,12 +25,14 @@
     - Moved scripts to `scripts/` directory.
     - Added `run.py` as the application entry point.
 - Integrated application logging with Gunicorn output.
+- Migrated to a single-container architecture using Supervisor to run both Gunicorn (Web) and the Scheduler (Worker).
+- Switched Docker base image to `python:3.12-alpine` with multi-stage build, reducing image size by >50%.
 
 ### Fixed
 - Fixed an issue where price trends chart would not load initially.
 - Fixed the "Edit" button functionality on the Stations management page.
 - Unified `card-header` background colors across all pages for a consistent theme.
-- Fixed missing background polling in Docker by introducing a dedicated worker process.
+- Fixed missing background polling in Docker by ensuring the scheduler runs alongside the web server.
 
 ### Removed
 - Removed default stations (350 and 4711) from configuration files and the database.

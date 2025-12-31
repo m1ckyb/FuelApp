@@ -55,6 +55,7 @@ ALLOWED_FUEL_TYPES = [
 # Default configuration values
 DEFAULT_POLL_INTERVAL = 60  # minutes
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_TIMEZONE = "Australia/Sydney"
 
 # Database schema version
 SCHEMA_VERSION = 1
@@ -317,6 +318,8 @@ class Config:
         
         self.stations: list[dict] = []
         self.poll_interval: int = DEFAULT_POLL_INTERVAL
+        self.cron_schedule: str = ""
+        self.timezone: str = DEFAULT_TIMEZONE
         self.log_level: str = DEFAULT_LOG_LEVEL
         
         self.db: Optional[ConfigDatabase] = None
@@ -423,6 +426,8 @@ class Config:
             except (ValueError, TypeError):
                 _LOGGER.warning("Invalid poll_interval in database, using default: %d", self.poll_interval)
             
+            self.cron_schedule = settings.get('cron_schedule', self.cron_schedule)
+            self.timezone = settings.get('timezone', self.timezone)
             self.log_level = settings.get('log_level', self.log_level)
             
             # Load stations
@@ -454,6 +459,8 @@ class Config:
             self.db.set_setting('influxdb_org', self.influxdb_org)
             self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
             self.db.set_setting('poll_interval', str(self.poll_interval))
+            self.db.set_setting('cron_schedule', self.cron_schedule)
+            self.db.set_setting('timezone', self.timezone)
             self.db.set_setting('log_level', self.log_level)
             
             # Save stations
@@ -489,6 +496,8 @@ class Config:
             self.db.set_setting('influxdb_org', self.influxdb_org)
             self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
             self.db.set_setting('poll_interval', str(self.poll_interval))
+            self.db.set_setting('cron_schedule', self.cron_schedule)
+            self.db.set_setting('timezone', self.timezone)
             self.db.set_setting('log_level', self.log_level)
             
             _LOGGER.info("Configuration saved to database")
@@ -511,6 +520,10 @@ class Config:
             self.influxdb_org = os.getenv('INFLUXDB_ORG')
         if os.getenv('INFLUXDB_BUCKET'):
             self.influxdb_bucket = os.getenv('INFLUXDB_BUCKET')
+        if os.getenv('TIMEZONE'):
+            self.timezone = os.getenv('TIMEZONE')
+        if os.getenv('CRON_SCHEDULE'):
+            self.cron_schedule = os.getenv('CRON_SCHEDULE')
         
         _LOGGER.debug("Environment variables loaded")
 

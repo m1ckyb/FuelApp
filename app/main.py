@@ -7,9 +7,11 @@ import logging
 import signal
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import schedule
+from croniter import croniter
 
 from .config import Config, setup_logging
 from .data import FuelDataFetcher, InfluxDBWriter
@@ -97,14 +99,15 @@ class FuelApp:
             _LOGGER.error("Failed to connect to InfluxDB, exiting")
             return
 
-        # Schedule the fetch and store job
-        interval = self.config.poll_interval
-        schedule.every(interval).minutes.do(self.fetch_and_store)
+        # Set timezone for the process
+        if self.config.timezone:
+            import os
+            os.environ['TZ'] = self.config.timezone
+            if hasattr(time, 'tzset'):
+                time.tzset()
+            _LOGGER.info("Timezone set to %s", self.config.timezone)
 
-        _LOGGER.info(
-            "Starting scheduled monitoring (interval: %d minutes)",
-            interval
-        )
+        _LOGGER.info("Starting scheduled monitoring")
 
         # Run once immediately
         self.fetch_and_store()
@@ -113,8 +116,54 @@ class FuelApp:
         global running
         try:
             while running:
-                schedule.run_pending()
-                time.sleep(1)
+                if self.config.cron_schedule:
+                    # Cron mode
+                    try:
+                        now = datetime.now()
+                        iter = croniter(self.config.cron_schedule, now)
+                        next_run = iter.get_next(datetime)
+                        sleep_seconds = (next_run - now).total_seconds()
+                        
+                        _LOGGER.info("Next run scheduled for %s (Cron: %s)", next_run, self.config.cron_schedule)
+                        
+                        # Sleep in small chunks to allow graceful shutdown
+                        while sleep_seconds > 0 and running:
+                            sleep_chunk = min(sleep_seconds, 1.0)
+                            time.sleep(sleep_chunk)
+                            sleep_seconds -= sleep_chunk
+                            
+                        if running:
+                            self.fetch_and_store()
+                            
+                    except Exception as e:
+                        _LOGGER.error("Error in cron scheduling: %s", e)
+                        time.sleep(60) # Prevent tight loop on error
+                else:
+                    # Interval mode (legacy)
+                    interval = self.config.poll_interval
+                    # Clear existing jobs to prevent duplicates if logic changes
+                    schedule.clear()
+                    schedule.every(interval).minutes.do(self.fetch_and_store)
+                    
+                    _LOGGER.info("Next run in %d minutes", interval)
+                    
+                    # Run pending jobs
+                    # Note: schedule.run_pending() checks if it's time to run.
+                    # We need to loop.
+                    
+                    # Since we just ran fetch_and_store, the next one is in 'interval' minutes.
+                    # schedule library is good for "every X minutes", but we need to keep the loop running.
+                    # But wait, if config changes, we might need to reload?
+                    # For now, let's assume config doesn't change dynamically in this process 
+                    # (it requires restart or we need to reload config in loop).
+                    # The original code just had a loop with schedule.run_pending().
+                    
+                    while running:
+                        schedule.run_pending()
+                        time.sleep(1)
+                        # TODO: check if we should switch to cron mode if config reloaded?
+                        # For simplicity, we stick to the selected mode at startup.
+                        
         except KeyboardInterrupt:
             _LOGGER.info("Keyboard interrupt received")
         finally:
