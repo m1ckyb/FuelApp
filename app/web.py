@@ -8,23 +8,20 @@ import os
 import secrets
 import shutil
 import subprocess
-import yaml
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
+from flask import Flask, render_template, request, jsonify, send_file
 from influxdb_client import InfluxDBClient
-from influxdb_client.client.flux_table import FluxTable
 
-from config_loader import Config
-from fuel_data import FuelDataFetcher, StationPriceData
-from constants import ALLOWED_FUEL_TYPES
+from .config import Config, ALLOWED_FUEL_TYPES
+from .data import FuelDataFetcher
 
 _LOGGER = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='../templates')
 
 # Global config instance
 config: Optional[Config] = None

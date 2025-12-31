@@ -22,18 +22,11 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/m1ckyb/FuelApp',
-    py_modules=[
-        'main',
-        'config_loader',
-        'fuel_data',
-        'influxdb_writer',
-        'constants',
-        'quick_start',
-    ],
+    packages=find_packages(),
     install_requires=requirements,
     entry_points={
         'console_scripts': [
-            'nsw-fuel-app=main:main',
+            'nsw-fuel-app=app.main:main',
         ],
     },
     classifiers=[

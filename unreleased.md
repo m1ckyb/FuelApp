@@ -14,6 +14,12 @@
 - Unified the page layout and container widths across the entire application.
 - Updated the Stations table header from "Station ID" to "Station".
 - Improved `.gitignore` to exclude local `data/` directory and keep the repository clean.
+- Refactored codebase structure:
+    - Moved source code to `app/` package.
+    - Merged configuration files into `app/config.py`.
+    - Merged data handling files into `app/data.py`.
+    - Moved scripts to `scripts/` directory.
+    - Added `run.py` as the application entry point.
 
 ### Fixed
 - Fixed an issue where price trends chart would not load initially.

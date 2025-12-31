@@ -24,7 +24,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
 
 # Copy application files
-COPY *.py ./
+COPY run.py .
+COPY app/ ./app/
 COPY templates/ ./templates/
 
 # Create config directory
@@ -37,4 +38,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 5000
 
 # Default command - run web UI
-CMD ["python", "main.py", "--web", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["python", "run.py", "--web", "--host", "0.0.0.0", "--port", "5000"]

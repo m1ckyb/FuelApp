@@ -11,9 +11,8 @@ from pathlib import Path
 
 import schedule
 
-from config_loader import Config
-from fuel_data import FuelDataFetcher
-from influxdb_writer import InfluxDBWriter
+from .config import Config
+from .data import FuelDataFetcher, InfluxDBWriter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -211,7 +210,7 @@ def main():
 
     if args.web:
         _LOGGER.info("Starting web UI server on %s:%d", args.host, args.port)
-        from web_app import run_web_app
+        from .web import run_web_app
         run_web_app(config, host=args.host, port=args.port, debug=False)
     elif args.once:
         _LOGGER.info("Running in single-shot mode")
@@ -223,4 +222,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
