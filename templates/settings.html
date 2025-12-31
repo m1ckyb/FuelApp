@@ -18,15 +18,34 @@
     <div class="row">
         <div class="col-lg-6">
             <div class="card">
-                <div class="card-header">
-                    <i class="bi bi-database-fill"></i>
-                    InfluxDB Configuration
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-database-fill"></i> InfluxDB Configuration</span>
+                    <button class="btn btn-sm btn-primary" id="editInfluxBtn" onclick="editInfluxConfig()">
+                        <i class="bi bi-pencil-fill"></i> Edit
+                    </button>
                 </div>
                 <div class="card-body">
                     <div id="configContainer">
                         <div class="text-center py-5">
                             <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
                             <p class="text-secondary mt-3">Loading configuration...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-sliders"></i> Application Settings</span>
+                    <button class="btn btn-sm btn-primary" id="editAppBtn" onclick="editAppSettings()">
+                        <i class="bi bi-pencil-fill"></i> Edit
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="appSettingsContainer">
+                        <div class="text-center py-5">
+                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+                            <p class="text-secondary mt-3">Loading settings...</p>
                         </div>
                     </div>
                 </div>
@@ -47,6 +66,10 @@
                     <div class="mb-3">
                         <label class="text-secondary small">Data Source</label>
                         <p class="mb-1">NSW FuelCheck API</p>
+                    </div>
+                    <div class="mb-3">
+                        <label class="text-secondary small">Configuration Storage</label>
+                        <p class="mb-1">SQLite Database</p>
                     </div>
                     <div class="mb-3">
                         <label class="text-secondary small">Documentation</label>
@@ -81,6 +104,8 @@
 
 {% block extra_js %}
 <script>
+    let currentConfig = null;
+    
     document.addEventListener('DOMContentLoaded', function() {
         loadConfig();
     });
@@ -94,7 +119,9 @@
                 throw new Error(data.error || 'Failed to load configuration');
             }
             
+            currentConfig = data;
             displayConfig(data);
+            displayAppSettings(data);
         } catch (error) {
             console.error('Error loading configuration:', error);
             document.getElementById('configContainer').innerHTML = `
@@ -112,16 +139,29 @@
         const html = `
             <div class="mb-3">
                 <label class="text-secondary small">InfluxDB URL</label>
-                <p class="mb-1 font-monospace">${config.influxdb_url}</p>
+                <p class="mb-1 font-monospace">${escapeHtml(config.influxdb_url)}</p>
             </div>
             <div class="mb-3">
                 <label class="text-secondary small">Organization</label>
-                <p class="mb-1">${config.influxdb_org}</p>
+                <p class="mb-1">${escapeHtml(config.influxdb_org)}</p>
             </div>
             <div class="mb-3">
                 <label class="text-secondary small">Bucket</label>
-                <p class="mb-1">${config.influxdb_bucket}</p>
+                <p class="mb-1">${escapeHtml(config.influxdb_bucket)}</p>
             </div>
+            <div class="mb-3">
+                <label class="text-secondary small">Token</label>
+                <p class="mb-1">${config.influxdb_token ? '***' : '<span class="text-warning">Not set</span>'}</p>
+            </div>
+        `;
+        
+        container.innerHTML = html;
+    }
+    
+    function displayAppSettings(config) {
+        const container = document.getElementById('appSettingsContainer');
+        
+        const html = `
             <div class="mb-3">
                 <label class="text-secondary small">Poll Interval</label>
                 <p class="mb-1">${config.poll_interval} minutes</p>
@@ -130,13 +170,174 @@
                 <label class="text-secondary small">Log Level</label>
                 <p class="mb-1">${config.log_level}</p>
             </div>
-            <div class="alert alert-info mt-4">
-                <i class="bi bi-info-circle-fill me-2"></i>
-                To modify these settings, edit the <code>config.yaml</code> file or set environment variables.
-            </div>
         `;
         
         container.innerHTML = html;
+    }
+    
+    function editInfluxConfig() {
+        const container = document.getElementById('configContainer');
+        
+        const html = `
+            <form id="influxConfigForm" onsubmit="saveInfluxConfig(event)">
+                <div class="mb-3">
+                    <label for="influxdb_url" class="form-label">InfluxDB URL</label>
+                    <input type="text" class="form-control" id="influxdb_url" 
+                           value="${escapeHtml(currentConfig.influxdb_url)}" required>
+                </div>
+                <div class="mb-3">
+                    <label for="influxdb_org" class="form-label">Organization</label>
+                    <input type="text" class="form-control" id="influxdb_org" 
+                           value="${escapeHtml(currentConfig.influxdb_org)}" required>
+                </div>
+                <div class="mb-3">
+                    <label for="influxdb_bucket" class="form-label">Bucket</label>
+                    <input type="text" class="form-control" id="influxdb_bucket" 
+                           value="${escapeHtml(currentConfig.influxdb_bucket)}" required>
+                </div>
+                <div class="mb-3">
+                    <label for="influxdb_token" class="form-label">Token</label>
+                    <input type="password" class="form-control" id="influxdb_token" 
+                           placeholder="Enter new token or leave unchanged" 
+                           value="${currentConfig.influxdb_token}">
+                    <small class="text-secondary">Leave blank to keep current token</small>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-check-lg"></i> Save
+                    </button>
+                    <button type="button" class="btn btn-secondary" onclick="cancelInfluxEdit()">
+                        <i class="bi bi-x-lg"></i> Cancel
+                    </button>
+                </div>
+            </form>
+        `;
+        
+        container.innerHTML = html;
+        document.getElementById('editInfluxBtn').style.display = 'none';
+    }
+    
+    function cancelInfluxEdit() {
+        displayConfig(currentConfig);
+        document.getElementById('editInfluxBtn').style.display = 'block';
+    }
+    
+    async function saveInfluxConfig(event) {
+        event.preventDefault();
+        
+        const formData = {
+            influxdb_url: document.getElementById('influxdb_url').value,
+            influxdb_org: document.getElementById('influxdb_org').value,
+            influxdb_bucket: document.getElementById('influxdb_bucket').value,
+            influxdb_token: document.getElementById('influxdb_token').value
+        };
+        
+        try {
+            const response = await fetch('/api/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to save configuration');
+            }
+            
+            showToast('Configuration saved successfully', 'success');
+            await loadConfig();
+            document.getElementById('editInfluxBtn').style.display = 'block';
+        } catch (error) {
+            console.error('Error saving configuration:', error);
+            showToast(error.message, 'error');
+        }
+    }
+    
+    function editAppSettings() {
+        const container = document.getElementById('appSettingsContainer');
+        
+        const html = `
+            <form id="appSettingsForm" onsubmit="saveAppSettings(event)">
+                <div class="mb-3">
+                    <label for="poll_interval" class="form-label">Poll Interval (minutes)</label>
+                    <input type="number" class="form-control" id="poll_interval" 
+                           value="${currentConfig.poll_interval}" min="1" required>
+                    <small class="text-secondary">Minimum 1 minute</small>
+                </div>
+                <div class="mb-3">
+                    <label for="log_level" class="form-label">Log Level</label>
+                    <select class="form-select" id="log_level" required>
+                        <option value="DEBUG" ${currentConfig.log_level === 'DEBUG' ? 'selected' : ''}>DEBUG</option>
+                        <option value="INFO" ${currentConfig.log_level === 'INFO' ? 'selected' : ''}>INFO</option>
+                        <option value="WARNING" ${currentConfig.log_level === 'WARNING' ? 'selected' : ''}>WARNING</option>
+                        <option value="ERROR" ${currentConfig.log_level === 'ERROR' ? 'selected' : ''}>ERROR</option>
+                        <option value="CRITICAL" ${currentConfig.log_level === 'CRITICAL' ? 'selected' : ''}>CRITICAL</option>
+                    </select>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-check-lg"></i> Save
+                    </button>
+                    <button type="button" class="btn btn-secondary" onclick="cancelAppEdit()">
+                        <i class="bi bi-x-lg"></i> Cancel
+                    </button>
+                </div>
+            </form>
+        `;
+        
+        container.innerHTML = html;
+        document.getElementById('editAppBtn').style.display = 'none';
+    }
+    
+    function cancelAppEdit() {
+        displayAppSettings(currentConfig);
+        document.getElementById('editAppBtn').style.display = 'block';
+    }
+    
+    async function saveAppSettings(event) {
+        event.preventDefault();
+        
+        const formData = {
+            poll_interval: parseInt(document.getElementById('poll_interval').value),
+            log_level: document.getElementById('log_level').value
+        };
+        
+        try {
+            const response = await fetch('/api/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to save settings');
+            }
+            
+            showToast('Settings saved successfully', 'success');
+            await loadConfig();
+            document.getElementById('editAppBtn').style.display = 'block';
+        } catch (error) {
+            console.error('Error saving settings:', error);
+            showToast(error.message, 'error');
+        }
+    }
+    
+    function escapeHtml(text) {
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return text.replace(/[&<>"']/g, m => map[m]);
     }
 </script>
 {% endblock %}

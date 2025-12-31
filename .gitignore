@@ -38,6 +38,8 @@ ENV/
 config.yaml
 .env
 .flask_secret
+config.db
+config.db-journal
 
 # Logs
 *.log

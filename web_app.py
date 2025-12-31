@@ -105,17 +105,17 @@ def add_station():
         if station['station_id'] == station_id:
             return jsonify({'error': 'Station already exists'}), 400
     
-    # Add station
-    new_station = {
-        'station_id': station_id,
-        'fuel_types': fuel_types
-    }
-    config.stations.append(new_station)
-    
-    # Save to config file
-    save_config()
-    
-    return jsonify({'message': 'Station added successfully', 'station': new_station}), 201
+    # Add station to database
+    if config.db and config.db.add_station(station_id, fuel_types):
+        # Update in-memory config
+        new_station = {
+            'station_id': station_id,
+            'fuel_types': fuel_types
+        }
+        config.stations.append(new_station)
+        return jsonify({'message': 'Station added successfully', 'station': new_station}), 201
+    else:
+        return jsonify({'error': 'Failed to add station'}), 500
 
 
 @app.route('/api/stations/<int:station_id>', methods=['DELETE'])
@@ -124,15 +124,13 @@ def delete_station(station_id):
     if not config:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
-    # Find and remove station
-    config.stations = [s for s in config.stations if s['station_id'] != station_id]
-    
-    try:
-        save_config()
-    except Exception:
-        return jsonify({'error': 'Failed to save configuration'}), 500
-    
-    return jsonify({'message': 'Station deleted successfully'}), 200
+    # Delete from database
+    if config.db and config.db.delete_station(station_id):
+        # Update in-memory config
+        config.stations = [s for s in config.stations if s['station_id'] != station_id]
+        return jsonify({'message': 'Station deleted successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to delete station'}), 500
 
 
 @app.route('/api/stations/<int:station_id>', methods=['PUT'])
@@ -152,17 +150,16 @@ def update_station(station_id):
     if invalid_types:
         return jsonify({'error': f'Invalid fuel types: {invalid_types}'}), 400
     
-    # Find and update station
-    for station in config.stations:
-        if station['station_id'] == station_id:
-            station['fuel_types'] = fuel_types
-            try:
-                save_config()
-            except Exception:
-                return jsonify({'error': 'Failed to save configuration'}), 500
-            return jsonify({'message': 'Station updated successfully', 'station': station}), 200
-    
-    return jsonify({'error': 'Station not found'}), 404
+    # Update in database
+    if config.db and config.db.update_station(station_id, fuel_types):
+        # Update in-memory config
+        for station in config.stations:
+            if station['station_id'] == station_id:
+                station['fuel_types'] = fuel_types
+                return jsonify({'message': 'Station updated successfully', 'station': station}), 200
+        return jsonify({'error': 'Station not found'}), 404
+    else:
+        return jsonify({'error': 'Failed to update station'}), 500
 
 
 @app.route('/api/prices/current', methods=['GET'])
@@ -290,39 +287,66 @@ def get_config():
         safe_url += f":{parsed_url.port}"
     
     return jsonify({
-        'influxdb_url': safe_url,
+        'influxdb_url': config.influxdb_url,  # Return full URL for editing
         'influxdb_org': config.influxdb_org,
         'influxdb_bucket': config.influxdb_bucket,
+        'influxdb_token': '***' if config.influxdb_token else '',  # Hide token but show if set
         'poll_interval': config.poll_interval,
         'log_level': config.log_level
     })
 
 
+@app.route('/api/config', methods=['PUT'])
+def update_config():
+    """Update configuration settings."""
+    if not config:
+        return jsonify({'error': 'Configuration not loaded'}), 500
+    
+    data = request.get_json()
+    
+    # Update InfluxDB settings
+    if 'influxdb_url' in data:
+        config.influxdb_url = data['influxdb_url']
+    
+    if 'influxdb_token' in data and data['influxdb_token'] != '***':
+        # Only update token if it's not the masked value
+        config.influxdb_token = data['influxdb_token']
+    
+    if 'influxdb_org' in data:
+        config.influxdb_org = data['influxdb_org']
+    
+    if 'influxdb_bucket' in data:
+        config.influxdb_bucket = data['influxdb_bucket']
+    
+    # Update app settings
+    if 'poll_interval' in data:
+        try:
+            poll_interval = int(data['poll_interval'])
+            if poll_interval < 1:
+                return jsonify({'error': 'Poll interval must be at least 1 minute'}), 400
+            config.poll_interval = poll_interval
+        except ValueError:
+            return jsonify({'error': 'Invalid poll interval'}), 400
+    
+    if 'log_level' in data:
+        log_level = data['log_level'].upper()
+        if log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+            return jsonify({'error': 'Invalid log level'}), 400
+        config.log_level = log_level
+    
+    # Save to database
+    if config.save_to_database():
+        return jsonify({'message': 'Configuration updated successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to save configuration'}), 500
+
+
 def save_config():
-    """Save current configuration to file."""
+    """Save current configuration to database (deprecated - kept for compatibility)."""
     if not config:
         return
     
-    config_data = {
-        'influxdb': {
-            'url': config.influxdb_url,
-            'token': config.influxdb_token,
-            'org': config.influxdb_org,
-            'bucket': config.influxdb_bucket
-        },
-        'stations': config.stations,
-        'poll_interval': config.poll_interval,
-        'log_level': config.log_level
-    }
-    
-    try:
-        config_file = Path('config.yaml')
-        with open(config_file, 'w') as f:
-            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
-        _LOGGER.info("Configuration saved to config.yaml")
-    except Exception as exc:
-        _LOGGER.error("Failed to save configuration: %s", exc)
-        raise
+    config.save_to_database()
 
 
 def run_web_app(config_obj: Config, host='0.0.0.0', port=5000, debug=False):

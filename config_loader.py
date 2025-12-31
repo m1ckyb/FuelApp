@@ -11,6 +11,7 @@ import yaml
 from dotenv import load_dotenv
 
 from constants import ALLOWED_FUEL_TYPES, DEFAULT_LOG_LEVEL, DEFAULT_POLL_INTERVAL
+from config_db import ConfigDatabase
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,8 +19,12 @@ _LOGGER = logging.getLogger(__name__)
 class Config:
     """Configuration for the NSW Fuel Station App."""
 
-    def __init__(self):
-        """Initialize configuration with default values."""
+    def __init__(self, db_path: str = "config.db"):
+        """Initialize configuration with default values.
+        
+        Args:
+            db_path: Path to SQLite database file
+        """
         self.influxdb_url: str = "http://localhost:8086"
         self.influxdb_token: str = ""
         self.influxdb_org: str = ""
@@ -28,6 +33,9 @@ class Config:
         self.stations: list[dict] = []
         self.poll_interval: int = DEFAULT_POLL_INTERVAL
         self.log_level: str = DEFAULT_LOG_LEVEL
+        
+        self.db_path = db_path
+        self.db: Optional[ConfigDatabase] = None
 
     def load_from_file(self, config_path: str) -> bool:
         """
@@ -42,8 +50,8 @@ class Config:
         try:
             config_file = Path(config_path)
             if not config_file.exists():
-                _LOGGER.error("Configuration file not found: %s", config_path)
-                return False
+                _LOGGER.info("Configuration file not found: %s, will try database", config_path)
+                return self.load_from_database()
 
             with open(config_file, 'r') as f:
                 config_data = yaml.safe_load(f)
@@ -79,10 +87,118 @@ class Config:
             self.log_level = config_data.get('log_level', self.log_level)
 
             _LOGGER.info("Configuration loaded from %s", config_path)
+            
+            # Migrate to database if it doesn't exist
+            if not Path(self.db_path).exists():
+                _LOGGER.info("Migrating configuration from YAML to database")
+                self.migrate_to_database()
+            
             return True
 
         except Exception as exc:
-            _LOGGER.error("Failed to load configuration: %s", exc)
+            _LOGGER.error("Failed to load configuration from file: %s", exc)
+            # Try loading from database as fallback
+            return self.load_from_database()
+    
+    def load_from_database(self) -> bool:
+        """
+        Load configuration from SQLite database.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.db = ConfigDatabase(self.db_path)
+            if not self.db.connect():
+                _LOGGER.error("Failed to connect to database")
+                return False
+            
+            # Load settings
+            settings = self.db.get_all_settings()
+            
+            # If database is empty, return False so YAML can be tried
+            if not settings:
+                _LOGGER.info("Database is empty")
+                return False
+            
+            self.influxdb_url = settings.get('influxdb_url', self.influxdb_url)
+            self.influxdb_token = settings.get('influxdb_token', self.influxdb_token)
+            self.influxdb_org = settings.get('influxdb_org', self.influxdb_org)
+            self.influxdb_bucket = settings.get('influxdb_bucket', self.influxdb_bucket)
+            self.poll_interval = int(settings.get('poll_interval', self.poll_interval))
+            self.log_level = settings.get('log_level', self.log_level)
+            
+            # Load stations
+            self.stations = self.db.get_stations()
+            
+            _LOGGER.info("Configuration loaded from database")
+            return True
+            
+        except Exception as exc:
+            _LOGGER.error("Failed to load configuration from database: %s", exc)
+            return False
+    
+    def migrate_to_database(self) -> bool:
+        """
+        Migrate current configuration to SQLite database.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not self.db:
+                self.db = ConfigDatabase(self.db_path)
+                if not self.db.connect():
+                    return False
+            
+            # Save settings
+            self.db.set_setting('influxdb_url', self.influxdb_url)
+            self.db.set_setting('influxdb_token', self.influxdb_token)
+            self.db.set_setting('influxdb_org', self.influxdb_org)
+            self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
+            self.db.set_setting('poll_interval', str(self.poll_interval))
+            self.db.set_setting('log_level', self.log_level)
+            
+            # Save stations
+            for station in self.stations:
+                self.db.add_station(
+                    station['station_id'],
+                    station['fuel_types']
+                )
+            
+            _LOGGER.info("Configuration migrated to database successfully")
+            return True
+            
+        except Exception as exc:
+            _LOGGER.error("Failed to migrate configuration to database: %s", exc)
+            return False
+    
+    def save_to_database(self) -> bool:
+        """
+        Save current configuration to database.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.db:
+            self.db = ConfigDatabase(self.db_path)
+            if not self.db.connect():
+                return False
+        
+        try:
+            # Save all settings
+            self.db.set_setting('influxdb_url', self.influxdb_url)
+            self.db.set_setting('influxdb_token', self.influxdb_token)
+            self.db.set_setting('influxdb_org', self.influxdb_org)
+            self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
+            self.db.set_setting('poll_interval', str(self.poll_interval))
+            self.db.set_setting('log_level', self.log_level)
+            
+            _LOGGER.info("Configuration saved to database")
+            return True
+            
+        except Exception as exc:
+            _LOGGER.error("Failed to save configuration to database: %s", exc)
             return False
 
     def load_from_env(self):
