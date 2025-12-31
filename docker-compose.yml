@@ -16,7 +16,7 @@ services:
       - influxdb-config:/etc/influxdb2
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      test: ["CMD", "influx", "ping"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -33,7 +33,9 @@ services:
       - INFLUXDB_ORG=fuelapp
       - INFLUXDB_BUCKET=fuel_prices
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      # Mount config file - copy config.yaml.docker to config.yaml before starting
+      # or edit docker-compose.yml to mount config.yaml.docker directly
+      - ./config.yaml.docker:/app/config.yaml:ro
       - fuelapp-data:/app/config
     depends_on:
       influxdb:

@@ -29,6 +29,8 @@ A standalone Python application that monitors NSW fuel station prices and stores
 
 ### Docker Installation (Recommended)
 
+**📖 For detailed Docker documentation, see [DOCKER.md](DOCKER.md)**
+
 The easiest way to run FuelApp is using Docker Compose, which will set up the application along with InfluxDB and Grafana automatically.
 
 1. **Clone the repository:**
@@ -37,12 +39,21 @@ The easiest way to run FuelApp is using Docker Compose, which will set up the ap
    cd FuelApp
    ```
 
-2. **Create configuration file:**
+2. **Start the services:**
    ```bash
-   cp config.yaml.docker config.yaml
+   docker compose up -d
    ```
+
+   This will use the default configuration in `config.yaml.docker` which includes example stations.
+
+3. **Access the application:**
+   - **FuelApp Web UI**: http://localhost:5000
+   - **InfluxDB**: http://localhost:8086 (admin/adminpassword)
+   - **Grafana**: http://localhost:3000 (admin/admin)
+
+4. **(Optional) Customize your configuration:**
    
-   Edit `config.yaml` and update the station IDs and fuel types you want to monitor:
+   To monitor different stations, edit `config.yaml.docker` or create your own `config.yaml` and update the volume mount in `docker-compose.yml`:
    ```yaml
    stations:
      - station_id: 350  # Replace with your station ID
@@ -50,16 +61,6 @@ The easiest way to run FuelApp is using Docker Compose, which will set up the ap
          - E10
          - U91
    ```
-
-3. **Start the services:**
-   ```bash
-   docker compose up -d
-   ```
-
-4. **Access the application:**
-   - **FuelApp Web UI**: http://localhost:5000
-   - **InfluxDB**: http://localhost:8086 (admin/adminpassword)
-   - **Grafana**: http://localhost:3000 (admin/admin)
 
 5. **View logs:**
    ```bash
