@@ -124,6 +124,13 @@
     let addStationModal;
     let editStationModal;
     
+    // Helper function to escape HTML to prevent XSS
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
     document.addEventListener('DOMContentLoaded', function() {
         addStationModal = new bootstrap.Modal(document.getElementById('addStationModal'));
         editStationModal = new bootstrap.Modal(document.getElementById('editStationModal'));
@@ -144,10 +151,11 @@
             displayStations(data.stations);
         } catch (error) {
             console.error('Error loading stations:', error);
-            document.getElementById('stationsContainer').innerHTML = `
+            const container = document.getElementById('stationsContainer');
+            container.innerHTML = `
                 <div class="alert alert-danger">
                     <i class="bi bi-exclamation-triangle-fill me-2"></i>
-                    Failed to load stations: ${error.message}
+                    Failed to load stations
                 </div>
             `;
         }
@@ -175,7 +183,7 @@
         
         for (const station of stations) {
             const fuelTypeBadges = station.fuel_types.map(ft => 
-                `<span class="badge bg-primary me-1">${ft}</span>`
+                `<span class="badge bg-primary me-1">${escapeHtml(ft)}</span>`
             ).join('');
             
             html += `
@@ -282,7 +290,7 @@
             loadStations();
         } catch (error) {
             console.error('Error adding station:', error);
-            showToast('Failed to add station: ' + error.message, 'error');
+            showToast('Failed to add station', 'error');
         }
     }
     
@@ -324,7 +332,7 @@
             loadStations();
         } catch (error) {
             console.error('Error updating station:', error);
-            showToast('Failed to update station: ' + error.message, 'error');
+            showToast('Failed to update station', 'error');
         }
     }
     
@@ -348,7 +356,7 @@
             loadStations();
         } catch (error) {
             console.error('Error deleting station:', error);
-            showToast('Failed to delete station: ' + error.message, 'error');
+            showToast('Failed to delete station', 'error');
         }
     }
 </script>

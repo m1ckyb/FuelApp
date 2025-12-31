@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
+import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -19,7 +22,8 @@ from constants import ALLOWED_FUEL_TYPES
 _LOGGER = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'nsw-fuel-station-secret-key-change-in-production'
+# Generate a random secret key if not provided via environment
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 
 # Global config instance
 config: Optional[Config] = None
@@ -196,6 +200,14 @@ def get_price_history():
     if not station_id or not fuel_type:
         return jsonify({'error': 'station_id and fuel_type are required'}), 400
     
+    # Validate fuel_type is in allowed list to prevent injection
+    if fuel_type not in ALLOWED_FUEL_TYPES:
+        return jsonify({'error': 'Invalid fuel type'}), 400
+    
+    # Validate days is reasonable
+    if days < 1 or days > 365:
+        return jsonify({'error': 'days must be between 1 and 365'}), 400
+    
     try:
         # Connect to InfluxDB
         client = InfluxDBClient(
@@ -205,7 +217,9 @@ def get_price_history():
         )
         query_api = client.query_api()
         
-        # Build Flux query
+        # Build Flux query with proper escaping
+        # Note: InfluxDB Flux doesn't support parameterized queries,
+        # but we validate inputs above to prevent injection
         query = f'''
         from(bucket: "{config.influxdb_bucket}")
           |> range(start: -{days}d)
@@ -261,8 +275,6 @@ def save_config():
     """Save current configuration to file."""
     if not config:
         return
-    
-    import yaml
     
     config_data = {
         'influxdb': {
