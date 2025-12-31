@@ -36,10 +36,10 @@
                     <span><i class="bi bi-graph-up"></i> Price Trends</span>
                     <div>
                         <select class="form-select form-select-sm d-inline-block w-auto" id="chartStation">
-                            <option value="">Select Station</option>
+                            <option value="">All Stations</option>
                         </select>
                         <select class="form-select form-select-sm d-inline-block w-auto ms-2" id="chartFuelType">
-                            <option value="">Select Fuel Type</option>
+                            <option value="">All Fuel Types</option>
                         </select>
                         <select class="form-select form-select-sm d-inline-block w-auto ms-2" id="chartDays">
                             <option value="1">Last 24 hours</option>
@@ -170,9 +170,8 @@
         const stationSelect = document.getElementById('chartStation');
         const fuelTypeSelect = document.getElementById('chartFuelType');
         
-        // Clear existing options
-        stationSelect.innerHTML = '<option value="">Select Station</option>';
-        fuelTypeSelect.innerHTML = '<option value="">Select Fuel Type</option>';
+        // Clear existing options but keep "All"
+        stationSelect.innerHTML = '<option value="">All Stations</option>';
         
         // Populate stations
         for (const station of prices) {
@@ -187,36 +186,37 @@
         fuelTypeSelect.addEventListener('change', loadPriceHistory);
         document.getElementById('chartDays').addEventListener('change', loadPriceHistory);
         
-        // Select first station by default
-        if (prices.length > 0) {
-            stationSelect.value = prices[0].station_id;
-            updateFuelTypeOptions();
-        }
+        updateFuelTypeOptions();
     }
     
     function updateFuelTypeOptions() {
         const stationSelect = document.getElementById('chartStation');
         const fuelTypeSelect = document.getElementById('chartFuelType');
-        const selectedStationId = parseInt(stationSelect.value);
+        const selectedStationId = stationSelect.value;
         
-        fuelTypeSelect.innerHTML = '<option value="">Select Fuel Type</option>';
+        fuelTypeSelect.innerHTML = '<option value="">All Fuel Types</option>';
         
-        const station = stationsData.find(s => s.station_id === selectedStationId);
-        if (station) {
-            const fuelTypes = Object.keys(station.prices);
-            for (const fuelType of fuelTypes) {
-                const option = document.createElement('option');
-                option.value = fuelType;
-                option.textContent = fuelType;
-                fuelTypeSelect.appendChild(option);
-            }
-            
-            // Select first fuel type by default
-            if (fuelTypes.length > 0) {
-                fuelTypeSelect.value = fuelTypes[0];
-                loadPriceHistory();
+        let fuelTypes = new Set();
+        if (selectedStationId === "") {
+            // All stations - collect all unique fuel types
+            stationsData.forEach(s => {
+                Object.keys(s.prices).forEach(ft => fuelTypes.add(ft));
+            });
+        } else {
+            const station = stationsData.find(s => s.station_id == selectedStationId);
+            if (station) {
+                Object.keys(station.prices).forEach(ft => fuelTypes.add(ft));
             }
         }
+
+        Array.from(fuelTypes).sort().forEach(fuelType => {
+            const option = document.createElement('option');
+            option.value = fuelType;
+            option.textContent = fuelType;
+            fuelTypeSelect.appendChild(option);
+        });
+        
+        loadPriceHistory();
     }
     
     async function loadPriceHistory() {
@@ -224,12 +224,12 @@
         const fuelType = document.getElementById('chartFuelType').value;
         const days = document.getElementById('chartDays').value;
         
-        if (!stationId || !fuelType) {
-            return;
-        }
-        
         try {
-            const response = await fetch(`/api/prices/history?station_id=${stationId}&fuel_type=${fuelType}&days=${days}`);
+            let url = `/api/prices/history?days=${days}`;
+            if (stationId) url += `&station_id=${stationId}`;
+            if (fuelType) url += `&fuel_type=${fuelType}`;
+
+            const response = await fetch(url);
             const data = await response.json();
             
             if (!response.ok) {
@@ -243,54 +243,92 @@
         }
     }
     
-    function displayPriceChart(history, fuelType) {
+    function displayPriceChart(history, selectedFuelType) {
         const ctx = document.getElementById('priceChart').getContext('2d');
         
         if (priceChart) {
             priceChart.destroy();
         }
         
-        const labels = history.map(h => new Date(h.time).toLocaleString());
-        const prices = history.map(h => h.price);
+        // Group data by station_id and fuel_type
+        const groups = {};
+        const timestamps = new Set();
+        
+        history.forEach(item => {
+            const key = `${item.station_id}_${item.fuel_type}`;
+            if (!groups[key]) {
+                const station = stationsData.find(s => s.station_id == item.station_id);
+                groups[key] = {
+                    label: station ? `${station.station_name} - ${item.fuel_type}` : `${item.station_id} - ${item.fuel_type}`,
+                    data: []
+                };
+            }
+            groups[key].data.push({
+                x: new Date(item.time),
+                y: item.price
+            });
+        });
+
+        const colors = [
+            'rgb(59, 130, 246)', 'rgb(239, 68, 68)', 'rgb(34, 197, 94)',
+            'rgb(245, 158, 11)', 'rgb(168, 85, 247)', 'rgb(236, 72, 153)',
+            'rgb(20, 184, 166)', 'rgb(249, 115, 22)'
+        ];
+        
+        const datasets = Object.values(groups).map((group, index) => ({
+            label: group.label,
+            data: group.data,
+            borderColor: colors[index % colors.length],
+            backgroundColor: colors[index % colors.length].replace('rgb', 'rgba').replace(')', ', 0.1)'),
+            borderWidth: 2,
+            tension: 0.4,
+            fill: false
+        }));
         
         priceChart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: labels,
-                datasets: [{
-                    label: fuelType + ' Price (cents/L)',
-                    data: prices,
-                    borderColor: 'rgb(59, 130, 246)',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    borderWidth: 2,
-                    tension: 0.4,
-                    fill: true
-                }]
+                datasets: datasets
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: true,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
                 plugins: {
                     legend: {
                         display: true,
+                        position: 'bottom',
                         labels: {
-                            color: '#f1f5f9'
+                            color: '#f1f5f9',
+                            boxWidth: 12,
+                            padding: 15
                         }
                     },
                     tooltip: {
-                        mode: 'index',
-                        intersect: false
+                        callbacks: {
+                            label: function(context) {
+                                return `${context.dataset.label}: ${context.parsed.y.toFixed(1)}¢`;
+                            }
+                        }
                     }
                 },
                 scales: {
                     x: {
-                        display: true,
+                        type: 'time',
+                        time: {
+                            unit: 'day',
+                            displayFormats: {
+                                day: 'MMM d'
+                            }
+                        },
                         grid: {
                             color: '#334155'
                         },
                         ticks: {
-                            color: '#94a3b8',
-                            maxTicksLimit: 10
+                            color: '#94a3b8'
                         }
                     },
                     y: {

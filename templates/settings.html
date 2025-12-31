@@ -50,6 +50,28 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Backup & Restore -->
+            <div class="card mt-4">
+                <div class="card-header">
+                    <i class="bi bi-archive-fill"></i>
+                    Backup & Restore
+                </div>
+                <div class="card-body">
+                    <p class="small text-secondary">
+                        Create a full backup of your InfluxDB data or restore from a previous backup.
+                    </p>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-primary" onclick="createBackup()" id="backupBtn">
+                            <i class="bi bi-download"></i> Download Backup
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="document.getElementById('restoreFile').click()" id="restoreBtn">
+                            <i class="bi bi-upload"></i> Restore Backup
+                        </button>
+                        <input type="file" id="restoreFile" accept=".zip" style="display: none" onchange="restoreBackup(this)">
+                    </div>
+                </div>
+            </div>
         </div>
         
         <div class="col-lg-6">
@@ -337,6 +359,83 @@
             "'": '&#039;'
         };
         return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    async function createBackup() {
+        const btn = document.getElementById('backupBtn');
+        const originalText = btn.innerHTML;
+        
+        try {
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Creating...';
+            btn.disabled = true;
+            
+            const response = await fetch('/api/backup', { method: 'POST' });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Backup failed');
+            }
+            
+            // Trigger download
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = response.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            
+            showToast('Backup created successfully', 'success');
+        } catch (error) {
+            console.error('Backup error:', error);
+            showToast(error.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    async function restoreBackup(input) {
+        if (!input.files || !input.files[0]) return;
+        
+        const file = input.files[0];
+        const btn = document.getElementById('restoreBtn');
+        const originalText = btn.innerHTML;
+        
+        if (!confirm('WARNING: Restoring a backup might overwrite existing data. Are you sure?')) {
+            input.value = '';
+            return;
+        }
+        
+        try {
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Restoring...';
+            btn.disabled = true;
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const response = await fetch('/api/restore', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Restore failed');
+            }
+            
+            showToast('Backup restored successfully', 'success');
+        } catch (error) {
+            console.error('Restore error:', error);
+            showToast(error.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            input.value = '';
+        }
     }
 </script>
 {% endblock %}

@@ -44,7 +44,8 @@ class Config:
 
     def load_from_file(self, config_path: str) -> bool:
         """
-        Load configuration from YAML file.
+        Load configuration.
+        Priority: Database > YAML file
         
         Args:
             config_path: Path to the configuration YAML file
@@ -52,6 +53,12 @@ class Config:
         Returns:
             True if successful, False otherwise
         """
+        # Try loading from database first if it exists
+        if Path(self.db_path).exists():
+            if self.load_from_database():
+                _LOGGER.info("Configuration loaded from database (ignoring YAML file)")
+                return True
+        
         try:
             config_file = Path(config_path)
             if not config_file.exists():

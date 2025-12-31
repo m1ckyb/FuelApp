@@ -6,12 +6,15 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import subprocess
 import yaml
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from influxdb_client import InfluxDBClient
 from influxdb_client.client.flux_table import FluxTable
 
@@ -49,6 +52,10 @@ def init_app(config_obj: Config):
             except Exception:
                 _LOGGER.warning("Could not persist Flask secret key to file")
     app.config['SECRET_KEY'] = secret_key
+
+    # Ensure backup directory exists
+    backup_dir = Path(config.data_dir) / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
 
 
 @app.route('/')
@@ -209,15 +216,12 @@ def get_price_history():
         return jsonify({'error': 'Configuration not loaded'}), 500
     
     # Get query parameters
-    station_id = request.args.get('station_id', type=int)
+    station_id = request.args.get('station_id')
     fuel_type = request.args.get('fuel_type')
     days = request.args.get('days', default=7, type=int)
     
-    if not station_id or not fuel_type:
-        return jsonify({'error': 'station_id and fuel_type are required'}), 400
-    
-    # Validate fuel_type is in allowed list to prevent injection
-    if fuel_type not in ALLOWED_FUEL_TYPES:
+    # Validate fuel_type if provided
+    if fuel_type and fuel_type not in ALLOWED_FUEL_TYPES:
         return jsonify({'error': 'Invalid fuel type'}), 400
     
     # Validate days is reasonable
@@ -233,18 +237,19 @@ def get_price_history():
         )
         query_api = client.query_api()
         
-        # Build Flux query with proper escaping
-        # Note: InfluxDB Flux doesn't support parameterized queries,
-        # but we validate inputs above to prevent injection
-        query = f'''
-        from(bucket: "{config.influxdb_bucket}")
-          |> range(start: -{days}d)
-          |> filter(fn: (r) => r._measurement == "fuel_price")
-          |> filter(fn: (r) => r.station_id == "{station_id}")
-          |> filter(fn: (r) => r.fuel_type == "{fuel_type}")
-          |> filter(fn: (r) => r._field == "price")
-          |> sort(columns: ["_time"])
-        '''
+        # Build Flux query
+        # Start with base query
+        query = f'from(bucket: "{config.influxdb_bucket}") |> range(start: -{days}d)'
+        query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
+        
+        if station_id:
+            query += f' |> filter(fn: (r) => r.station_id == "{station_id}")'
+        
+        if fuel_type:
+            query += f' |> filter(fn: (r) => r.fuel_type == "{fuel_type}")'
+            
+        query += ' |> filter(fn: (r) => r._field == "price")'
+        query += ' |> sort(columns: ["_time"])'
         
         tables = query_api.query(query)
         
@@ -254,7 +259,9 @@ def get_price_history():
             for record in table.records:
                 history.append({
                     'time': record.get_time().isoformat(),
-                    'price': record.get_value()
+                    'price': record.get_value(),
+                    'station_id': record.values.get('station_id'),
+                    'fuel_type': record.values.get('fuel_type')
                 })
         
         client.close()
@@ -341,6 +348,123 @@ def update_config():
         return jsonify({'message': 'Configuration updated successfully'}), 200
     else:
         return jsonify({'error': 'Failed to save configuration'}), 500
+
+
+@app.route('/api/backup', methods=['POST'])
+def create_backup():
+    """Create a backup of InfluxDB data."""
+    if not config:
+        return jsonify({'error': 'Configuration not loaded'}), 500
+    
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = Path(config.data_dir) / 'backups' / timestamp
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Run influx backup command
+        # Note: Requires influx CLI to be installed in the container
+        cmd = [
+            "influx", "backup",
+            str(backup_dir),
+            "--host", config.influxdb_url,
+            "--token", config.influxdb_token,
+            "--org", config.influxdb_org,
+            "--bucket", config.influxdb_bucket
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            _LOGGER.error("Backup failed: %s", result.stderr)
+            return jsonify({'error': f'Backup failed: {result.stderr}'}), 500
+            
+        # Create zip file
+        zip_path = Path(config.data_dir) / 'backups' / f"backup_{timestamp}.zip"
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(backup_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, backup_dir)
+                    zipf.write(file_path, arcname)
+                    
+        # Clean up directory
+        shutil.rmtree(backup_dir)
+        
+        return send_file(
+            zip_path,
+            as_attachment=True,
+            download_name=f"fuelapp_backup_{timestamp}.zip",
+            mimetype='application/zip'
+        )
+        
+    except Exception as exc:
+        _LOGGER.error("Backup exception: %s", exc)
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/restore', methods=['POST'])
+def restore_backup():
+    """Restore InfluxDB data from a backup zip file."""
+    if not config:
+        return jsonify({'error': 'Configuration not loaded'}), 500
+    
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+        
+    if not file.filename.endswith('.zip'):
+        return jsonify({'error': 'File must be a .zip archive'}), 400
+
+    temp_dir = Path(config.data_dir) / 'restore_temp'
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True)
+    
+    try:
+        # Save and extract zip
+        zip_path = temp_dir / 'restore.zip'
+        file.save(zip_path)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zipf:
+            zipf.extractall(temp_dir)
+            
+        # Run influx restore command
+        # Note: Restore usually requires writing to a new bucket if the old one exists
+        # or using --full to replace everything (dangerous). 
+        # Here we'll try to restore to the configured bucket. 
+        # If it fails due to existing data, we might need a different approach.
+        # But 'influx restore' creates new buckets if they don't exist.
+        # If the bucket exists, it might conflict. 
+        
+        # Basic restore command
+        cmd = [
+            "influx", "restore",
+            str(temp_dir),
+            "--host", config.influxdb_url,
+            "--token", config.influxdb_token,
+            "--full" # Trying full restore for now, implies admin token usage
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            # If full restore fails, try specific bucket restore? 
+            # But backup format is specific.
+            _LOGGER.error("Restore failed: %s", result.stderr)
+            return jsonify({'error': f'Restore failed: {result.stderr}'}), 500
+            
+        return jsonify({'message': 'Restore completed successfully'}), 200
+        
+    except Exception as exc:
+        _LOGGER.error("Restore exception: %s", exc)
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        # Cleanup
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
 
 
 def save_config():

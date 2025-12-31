@@ -14,18 +14,6 @@ stations:
   # List of station IDs to monitor
   # You can find station IDs from the NSW FuelCheck app or API
   # Example stations - update these with your preferred stations
-  - station_id: 350
-    fuel_types:
-      - E10
-      - U91
-      - P95
-      - P98
-      - DL
-  
-  - station_id: 4711
-    fuel_types:
-      - E10
-      - U91
 
 # Polling interval in minutes (default: 60)
 poll_interval: 60

@@ -37,7 +37,7 @@ services:
       # Mount config file - copy config.yaml.docker to config.yaml before starting
       # or edit docker-compose.yml to mount config.yaml.docker directly
       - ./config.yaml.docker:/app/config.yaml:ro
-      - fuelapp-data:/app/config
+      - ./data:/app/config
     depends_on:
       influxdb:
         condition: service_healthy
@@ -61,5 +61,4 @@ volumes:
   influxdb-data:
   influxdb-config:
   grafana-data:
-  fuelapp-data:
 
