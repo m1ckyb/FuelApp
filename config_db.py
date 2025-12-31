@@ -28,6 +28,11 @@ class ConfigDatabase:
     def connect(self) -> bool:
         """Connect to the database and initialize schema if needed.
         
+        Note: Uses check_same_thread=False for Flask compatibility.
+        The Flask app runs in a single-threaded development server by default.
+        For production use with multi-threading, consider using a connection pool
+        or implementing proper thread synchronization.
+        
         Returns:
             True if connection successful, False otherwise
         """

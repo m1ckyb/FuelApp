@@ -286,7 +286,9 @@ def get_config():
     if parsed_url.port:
         safe_url += f":{parsed_url.port}"
     
-    # Return full URL for editing, but hide token value
+    # Return full URL for editing in the UI
+    # Note: This is intentional - users need the full URL to edit it
+    # The token is masked for security
     return jsonify({
         'influxdb_url': config.influxdb_url,
         'influxdb_org': config.influxdb_org,
