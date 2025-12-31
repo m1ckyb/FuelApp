@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - NSW Fuel Monitor{% endblock %}
+
+{% block content %}
+<div class="container-xxl">
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="h2 mb-1">
+                <i class="bi bi-gear-fill"></i>
+                Settings
+            </h1>
+            <p class="text-secondary mb-0">Configuration and system information</p>
+        </div>
+    </div>
+    
+    <!-- Configuration -->
+    <div class="row">
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-database-fill"></i>
+                    InfluxDB Configuration
+                </div>
+                <div class="card-body">
+                    <div id="configContainer">
+                        <div class="text-center py-5">
+                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+                            <p class="text-secondary mt-3">Loading configuration...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-info-circle-fill"></i>
+                    System Information
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="text-secondary small">Application</label>
+                        <p class="mb-1">NSW Fuel Station Monitor</p>
+                    </div>
+                    <div class="mb-3">
+                        <label class="text-secondary small">Data Source</label>
+                        <p class="mb-1">NSW FuelCheck API</p>
+                    </div>
+                    <div class="mb-3">
+                        <label class="text-secondary small">Documentation</label>
+                        <p class="mb-1">
+                            <a href="https://github.com/m1ckyb/FuelApp" target="_blank" class="text-decoration-none">
+                                <i class="bi bi-github"></i> GitHub Repository
+                            </a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card mt-4">
+                <div class="card-header">
+                    <i class="bi bi-shield-check"></i>
+                    About FuelCheck
+                </div>
+                <div class="card-body">
+                    <p class="small text-secondary mb-0">
+                        Data provided by NSW Government FuelCheck. This application is not officially 
+                        affiliated with or endorsed by NSW Government or FuelCheck. 
+                        <br><br>
+                        Prices are updated based on your configured polling interval and stored in InfluxDB 
+                        for historical analysis.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        loadConfig();
+    });
+    
+    async function loadConfig() {
+        try {
+            const response = await fetch('/api/config');
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to load configuration');
+            }
+            
+            displayConfig(data);
+        } catch (error) {
+            console.error('Error loading configuration:', error);
+            document.getElementById('configContainer').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                    Failed to load configuration
+                </div>
+            `;
+        }
+    }
+    
+    function displayConfig(config) {
+        const container = document.getElementById('configContainer');
+        
+        const html = `
+            <div class="mb-3">
+                <label class="text-secondary small">InfluxDB URL</label>
+                <p class="mb-1 font-monospace">${config.influxdb_url}</p>
+            </div>
+            <div class="mb-3">
+                <label class="text-secondary small">Organization</label>
+                <p class="mb-1">${config.influxdb_org}</p>
+            </div>
+            <div class="mb-3">
+                <label class="text-secondary small">Bucket</label>
+                <p class="mb-1">${config.influxdb_bucket}</p>
+            </div>
+            <div class="mb-3">
+                <label class="text-secondary small">Poll Interval</label>
+                <p class="mb-1">${config.poll_interval} minutes</p>
+            </div>
+            <div class="mb-3">
+                <label class="text-secondary small">Log Level</label>
+                <p class="mb-1">${config.log_level}</p>
+            </div>
+            <div class="alert alert-info mt-4">
+                <i class="bi bi-info-circle-fill me-2"></i>
+                To modify these settings, edit the <code>config.yaml</code> file or set environment variables.
+            </div>
+        `;
+        
+        container.innerHTML = html;
+    }
+</script>
+{% endblock %}
