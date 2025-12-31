@@ -1,0 +1,34 @@
+# NSW Fuel Station App Configuration for Docker Compose
+# This configuration is optimized for use with docker-compose.yml
+
+# InfluxDB Configuration
+# Note: When using docker-compose, these values will be overridden by environment variables
+influxdb:
+  url: "http://influxdb:8086"
+  token: "my-super-secret-auth-token"
+  org: "fuelapp"
+  bucket: "fuel_prices"
+
+# Fuel Station Configuration
+stations:
+  # List of station IDs to monitor
+  # You can find station IDs from the NSW FuelCheck app or API
+  # Example stations - update these with your preferred stations
+  - station_id: 350
+    fuel_types:
+      - E10
+      - U91
+      - P95
+      - P98
+      - DL
+  
+  - station_id: 4711
+    fuel_types:
+      - E10
+      - U91
+
+# Polling interval in minutes (default: 60)
+poll_interval: 60
+
+# Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+log_level: "INFO"
