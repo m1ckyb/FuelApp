@@ -251,11 +251,21 @@
             const toast = document.createElement('div');
             toast.className = `alert ${alertClass} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
             toast.style.zIndex = '9999';
-            toast.innerHTML = `
-                <i class="bi bi-${icon} me-2"></i>
-                ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            `;
+            
+            const iconElement = document.createElement('i');
+            iconElement.className = `bi bi-${icon} me-2`;
+            
+            const messageSpan = document.createElement('span');
+            messageSpan.textContent = message;
+            
+            const closeButton = document.createElement('button');
+            closeButton.type = 'button';
+            closeButton.className = 'btn-close';
+            closeButton.setAttribute('data-bs-dismiss', 'alert');
+            
+            toast.appendChild(iconElement);
+            toast.appendChild(messageSpan);
+            toast.appendChild(closeButton);
             
             document.body.appendChild(toast);
             

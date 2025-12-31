@@ -282,8 +282,15 @@ def get_config():
     if not config:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
+    # Parse URL to hide sensitive parts
+    from urllib.parse import urlparse
+    parsed_url = urlparse(config.influxdb_url)
+    safe_url = f"{parsed_url.scheme}://{parsed_url.hostname}"
+    if parsed_url.port:
+        safe_url += f":{parsed_url.port}"
+    
     return jsonify({
-        'influxdb_url': config.influxdb_url,
+        'influxdb_url': safe_url,
         'influxdb_org': config.influxdb_org,
         'influxdb_bucket': config.influxdb_bucket,
         'poll_interval': config.poll_interval,

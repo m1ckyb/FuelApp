@@ -135,6 +135,24 @@
         addStationModal = new bootstrap.Modal(document.getElementById('addStationModal'));
         editStationModal = new bootstrap.Modal(document.getElementById('editStationModal'));
         
+        // Event delegation for edit and delete buttons
+        document.getElementById('stationsContainer').addEventListener('click', function(e) {
+            const editBtn = e.target.closest('.edit-station-btn');
+            if (editBtn) {
+                const stationId = parseInt(editBtn.dataset.stationId);
+                const fuelTypes = JSON.parse(editBtn.dataset.fuelTypes);
+                editStation(stationId, fuelTypes);
+                return;
+            }
+            
+            const deleteBtn = e.target.closest('.delete-station-btn');
+            if (deleteBtn) {
+                const stationId = parseInt(deleteBtn.dataset.stationId);
+                deleteStation(stationId);
+                return;
+            }
+        });
+        
         loadStations();
         loadFuelTypes();
     });
@@ -191,10 +209,13 @@
                     <td>${station.station_id}</td>
                     <td>${fuelTypeBadges}</td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="editStation(${station.station_id}, ${JSON.stringify(station.fuel_types).replace(/"/g, '&quot;')})">
+                        <button class="btn btn-sm btn-outline-primary edit-station-btn" 
+                                data-station-id="${station.station_id}" 
+                                data-fuel-types="${escapeHtml(JSON.stringify(station.fuel_types))}">
                             <i class="bi bi-pencil"></i> Edit
                         </button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteStation(${station.station_id})">
+                        <button class="btn btn-sm btn-outline-danger delete-station-btn" 
+                                data-station-id="${station.station_id}">
                             <i class="bi bi-trash"></i> Delete
                         </button>
                     </td>
