@@ -308,8 +308,8 @@ def update_config():
     if 'influxdb_url' in data:
         config.influxdb_url = data['influxdb_url']
     
-    if 'influxdb_token' in data and data['influxdb_token'] != '***':
-        # Only update token if it's not the masked value
+    if 'influxdb_token' in data and data['influxdb_token'] and data['influxdb_token'] != '***':
+        # Only update token if it's provided and not the masked value
         config.influxdb_token = data['influxdb_token']
     
     if 'influxdb_org' in data:
