@@ -3,7 +3,6 @@
 {% block title %}Stations - NSW Fuel Monitor{% endblock %}
 
 {% block content %}
-<div class="container-xxl">
     <div class="row mb-4">
         <div class="col">
             <h1 class="h2 mb-1">
@@ -39,7 +38,6 @@
             </div>
         </div>
     </div>
-</div>
 
 <!-- Add Station Modal -->
 <div class="modal fade" id="addStationModal" tabindex="-1">
@@ -123,6 +121,7 @@
     let fuelTypes = [];
     let addStationModal;
     let editStationModal;
+    let stationsData = []; // Store loaded stations globally
     
     // Helper function to escape HTML to prevent XSS
     function escapeHtml(text) {
@@ -140,8 +139,11 @@
             const editBtn = e.target.closest('.edit-station-btn');
             if (editBtn) {
                 const stationId = parseInt(editBtn.dataset.stationId);
-                const fuelTypes = JSON.parse(editBtn.dataset.fuelTypes);
-                editStation(stationId, fuelTypes);
+                // Find station in global data
+                const station = stationsData.find(s => s.station_id === stationId);
+                if (station) {
+                    editStation(station);
+                }
                 return;
             }
             
@@ -166,6 +168,7 @@
                 throw new Error(data.error || 'Failed to load stations');
             }
             
+            stationsData = data.stations; // Update global data
             displayStations(data.stations);
         } catch (error) {
             console.error('Error loading stations:', error);
@@ -197,7 +200,7 @@
         }
         
         let html = '<div class="table-responsive"><table class="table table-dark table-hover">';
-        html += '<thead><tr><th>Station ID</th><th>Fuel Types</th><th>Actions</th></tr></thead><tbody>';
+        html += '<thead><tr><th>Station</th><th>Fuel Types</th><th>Actions</th></tr></thead><tbody>';
         
         for (const station of stations) {
             const fuelTypeBadges = station.fuel_types.map(ft => 
@@ -206,12 +209,14 @@
             
             html += `
                 <tr>
-                    <td>${station.station_id}</td>
+                    <td>
+                        <div class="fw-bold">${escapeHtml(station.station_name)}</div>
+                        <div class="small text-secondary">ID: ${station.station_id}</div>
+                    </td>
                     <td>${fuelTypeBadges}</td>
                     <td>
                         <button class="btn btn-sm btn-outline-primary edit-station-btn" 
-                                data-station-id="${station.station_id}" 
-                                data-fuel-types="${escapeHtml(JSON.stringify(station.fuel_types))}">
+                                data-station-id="${station.station_id}">
                             <i class="bi bi-pencil"></i> Edit
                         </button>
                         <button class="btn btn-sm btn-outline-danger delete-station-btn" 
@@ -315,10 +320,10 @@
         }
     }
     
-    function editStation(stationId, fuelTypes) {
-        document.getElementById('editStationId').value = stationId;
-        document.getElementById('editStationIdDisplay').value = stationId;
-        displayFuelTypeCheckboxes('editFuelTypesContainer', fuelTypes);
+    function editStation(station) {
+        document.getElementById('editStationId').value = station.station_id;
+        document.getElementById('editStationIdDisplay').value = station.station_id;
+        displayFuelTypeCheckboxes('editFuelTypesContainer', station.fuel_types);
         editStationModal.show();
     }
     

@@ -82,7 +82,27 @@ def get_stations():
     if not config:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
-    return jsonify({'stations': config.stations})
+    # Try to fetch station details to get names
+    station_names = {}
+    if fetcher:
+        try:
+            data = fetcher.fetch_station_price_data()
+            if data and data.stations:
+                for s in data.stations.values():
+                    station_names[s.code] = s.name
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch station names: %s", e)
+    
+    result = []
+    for station in config.stations:
+        sid = station['station_id']
+        result.append({
+            'station_id': sid,
+            'station_name': station_names.get(sid, f"Station {sid}"),
+            'fuel_types': station['fuel_types']
+        })
+        
+    return jsonify({'stations': result})
 
 
 @app.route('/api/stations', methods=['POST'])

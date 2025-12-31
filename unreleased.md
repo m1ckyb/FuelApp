@@ -5,13 +5,20 @@
 - Added Backup & Restore functionality for InfluxDB data in the Settings page.
 - Added `/api/backup` and `/api/restore` endpoints to the web API.
 - Added `influxdb2-cli` to the Docker image to support backup operations.
+- Added station name display to the Stations management page.
+- Redesigned the Web UI with a modern dark theme inspired by RouteGhost.
 
 ### Changed
 - Updated `dashboard.html` to allow viewing price trends without selecting a specific station or fuel type.
 - Updated `web_app.py` logic for price history API to handle optional filters.
+- Unified the page layout and container widths across the entire application.
+- Updated the Stations table header from "Station ID" to "Station".
+- Improved `.gitignore` to exclude local `data/` directory and keep the repository clean.
 
 ### Fixed
 - Fixed an issue where price trends chart would not load initially.
+- Fixed the "Edit" button functionality on the Stations management page.
+- Unified `card-header` background colors across all pages for a consistent theme.
 
 ### Removed
 - Removed default stations (350 and 4711) from configuration files and the database.

@@ -19,17 +19,20 @@
     <!-- Custom CSS -->
     <style>
         :root {
-            --bg-primary: #0f172a;
-            --bg-secondary: #1e293b;
-            --bg-tertiary: #334155;
-            --text-primary: #f1f5f9;
-            --text-secondary: #94a3b8;
-            --border-color: #334155;
-            --accent-color: #3b82f6;
-            --accent-hover: #2563eb;
-            --success-color: #10b981;
-            --danger-color: #ef4444;
-            --warning-color: #f59e0b;
+            /* RouteGhost Dark Theme Colors */
+            --bg-primary: #0f172a;    /* Main background */
+            --bg-secondary: #1e293b;  /* Card background */
+            --bg-tertiary: #334155;   /* Input/Header background */
+            --text-primary: #f1f5f9;  /* Main text */
+            --text-secondary: #94a3b8;/* Dimmed text */
+            --border-color: #334155;  /* Borders */
+            
+            --accent-color: #2563eb;  /* Primary Blue */
+            --accent-hover: #1e40af;  /* Darker Blue */
+            
+            --success-color: #16a34a; /* Green */
+            --danger-color: #dc2626;  /* Red */
+            --warning-color: #ea580c; /* Orange */
         }
         
         body {
@@ -70,11 +73,13 @@
             border-bottom: 1px solid var(--border-color);
             font-weight: 600;
             padding: 1rem 1.25rem;
+            color: var(--text-primary);
         }
         
         .btn-primary {
             background-color: var(--accent-color);
             border-color: var(--accent-color);
+            color: #ffffff;
         }
         
         .btn-primary:hover {
@@ -92,6 +97,16 @@
             border-color: var(--success-color);
         }
         
+        .btn-outline-primary {
+            color: var(--accent-color);
+            border-color: var(--accent-color);
+        }
+
+        .btn-outline-primary:hover {
+            background-color: var(--accent-color);
+            color: #ffffff;
+        }
+
         .table {
             color: var(--text-primary);
         }
@@ -99,6 +114,11 @@
         .table-dark {
             --bs-table-bg: var(--bg-secondary);
             --bs-table-border-color: var(--border-color);
+        }
+        
+        .table-hover > tbody > tr:hover > * {
+            --bs-table-accent-bg: var(--bg-tertiary);
+            color: var(--text-primary);
         }
         
         .form-control,
@@ -113,11 +133,23 @@
             background-color: var(--bg-tertiary);
             border-color: var(--accent-color);
             color: var(--text-primary);
+            box-shadow: 0 0 0 0.25rem rgba(37, 99, 235, 0.25);
+        }
+
+        .form-control::placeholder {
+            color: var(--text-secondary);
+            opacity: 0.7;
+        }
+
+        .form-control:disabled {
+             background-color: rgba(51, 65, 85, 0.5);
+             color: var(--text-secondary);
         }
         
         .modal-content {
             background-color: var(--bg-secondary);
             border: 1px solid var(--border-color);
+            color: var(--text-primary);
         }
         
         .modal-header {
@@ -127,6 +159,10 @@
         .modal-footer {
             border-top-color: var(--border-color);
         }
+
+        .btn-close {
+            filter: invert(1) grayscale(100%) brightness(200%);
+        }
         
         .badge {
             font-weight: 500;
@@ -134,7 +170,7 @@
         }
         
         .price-card {
-            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            background-color: var(--bg-tertiary);
             border: 1px solid var(--border-color);
             border-radius: 12px;
             padding: 1.5rem;
@@ -144,7 +180,8 @@
         
         .price-card:hover {
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+            border-color: var(--accent-color);
         }
         
         .price-value {
@@ -163,6 +200,7 @@
         .station-name {
             font-weight: 600;
             margin-bottom: 0.5rem;
+            color: var(--text-primary);
         }
         
         .station-address {
@@ -186,17 +224,25 @@
         
         .alert {
             border-radius: 8px;
-            border: none;
+            border: 1px solid transparent;
         }
         
         .alert-success {
-            background-color: rgba(16, 185, 129, 0.1);
+            background-color: rgba(22, 163, 74, 0.1);
             color: var(--success-color);
+            border-color: rgba(22, 163, 74, 0.2);
         }
         
         .alert-danger {
-            background-color: rgba(239, 68, 68, 0.1);
+            background-color: rgba(220, 38, 38, 0.1);
             color: var(--danger-color);
+            border-color: rgba(220, 38, 38, 0.2);
+        }
+
+        .alert-warning {
+             background-color: rgba(234, 88, 12, 0.1);
+             color: var(--warning-color);
+             border-color: rgba(234, 88, 12, 0.2);
         }
     </style>
     
@@ -236,7 +282,7 @@
     </nav>
     
     <!-- Main Content -->
-    <main class="container-fluid py-4">
+    <main class="container-xxl py-4">
         {% block content %}{% endblock %}
     </main>
     
