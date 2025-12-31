@@ -22,6 +22,7 @@ The application is built with a modular architecture:
 - `VERSION.txt`: Contains the current semantic version of the application.
 - `CHANGELOG.md`: Tracks history of changes.
 - `unreleased.md`: Buffer for upcoming release notes.
+- `SECURITY/`: Contains historical security scan reports (Bandit, pip-audit).
 
 ## Release Process
 
