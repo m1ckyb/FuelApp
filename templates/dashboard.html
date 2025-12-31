@@ -139,13 +139,13 @@
             } else {
                 for (const fuelType in station.prices) {
                     const price = station.prices[fuelType];
-                    const priceInDollars = (price / 100).toFixed(1);
+                    const priceInCents = (price / 100).toFixed(1);
                     
                     html += `
                         <div class="col-md-3 col-sm-4 col-6">
                             <div class="price-card">
                                 <div class="price-label">${escapeHtml(fuelType)}</div>
-                                <div class="price-value">${priceInDollars}¢</div>
+                                <div class="price-value">${priceInCents}¢</div>
                             </div>
                         </div>
                     `;

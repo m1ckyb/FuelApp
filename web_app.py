@@ -23,7 +23,22 @@ _LOGGER = logging.getLogger(__name__)
 
 app = Flask(__name__)
 # Generate a random secret key if not provided via environment
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
+# Note: For production, set FLASK_SECRET_KEY environment variable to persist sessions
+secret_key = os.environ.get('FLASK_SECRET_KEY')
+if not secret_key:
+    # Try to load from a file, or generate and save a new one
+    secret_file = Path('.flask_secret')
+    if secret_file.exists():
+        with open(secret_file, 'r') as f:
+            secret_key = f.read().strip()
+    else:
+        secret_key = secrets.token_hex(32)
+        try:
+            with open(secret_file, 'w') as f:
+                f.write(secret_key)
+        except Exception:
+            _LOGGER.warning("Could not persist Flask secret key to file")
+app.config['SECRET_KEY'] = secret_key
 
 # Global config instance
 config: Optional[Config] = None
@@ -112,8 +127,10 @@ def delete_station(station_id):
     # Find and remove station
     config.stations = [s for s in config.stations if s['station_id'] != station_id]
     
-    # Save to config file
-    save_config()
+    try:
+        save_config()
+    except Exception:
+        return jsonify({'error': 'Failed to save configuration'}), 500
     
     return jsonify({'message': 'Station deleted successfully'}), 200
 
@@ -139,7 +156,10 @@ def update_station(station_id):
     for station in config.stations:
         if station['station_id'] == station_id:
             station['fuel_types'] = fuel_types
-            save_config()
+            try:
+                save_config()
+            except Exception:
+                return jsonify({'error': 'Failed to save configuration'}), 500
             return jsonify({'message': 'Station updated successfully', 'station': station}), 200
     
     return jsonify({'error': 'Station not found'}), 404
@@ -247,7 +267,7 @@ def get_price_history():
         
     except Exception as exc:
         _LOGGER.error("Failed to fetch price history: %s", exc)
-        return jsonify({'error': str(exc)}), 500
+        return jsonify({'error': 'Failed to fetch price history'}), 500
 
 
 @app.route('/api/fuel-types', methods=['GET'])
@@ -288,11 +308,14 @@ def save_config():
         'log_level': config.log_level
     }
     
-    config_file = Path('config.yaml')
-    with open(config_file, 'w') as f:
-        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
-    
-    _LOGGER.info("Configuration saved to config.yaml")
+    try:
+        config_file = Path('config.yaml')
+        with open(config_file, 'w') as f:
+            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+        _LOGGER.info("Configuration saved to config.yaml")
+    except Exception as exc:
+        _LOGGER.error("Failed to save configuration: %s", exc)
+        raise
 
 
 def run_web_app(config_obj: Config, host='0.0.0.0', port=5000, debug=False):

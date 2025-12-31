@@ -37,6 +37,7 @@ ENV/
 # Configuration (keep examples)
 config.yaml
 .env
+.flask_secret
 
 # Logs
 *.log
