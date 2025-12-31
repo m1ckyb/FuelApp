@@ -11,7 +11,7 @@ from pathlib import Path
 
 import schedule
 
-from .config import Config
+from .config import Config, setup_logging
 from .data import FuelDataFetcher, InfluxDBWriter
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,21 +25,6 @@ def signal_handler(signum, frame):
     global running
     _LOGGER.info("Shutdown signal received, stopping...")
     running = False
-
-
-def setup_logging(log_level: str):
-    """Configure logging for the application."""
-    numeric_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        numeric_level = logging.INFO
-
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
 
 
 class FuelApp:

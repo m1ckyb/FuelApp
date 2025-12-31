@@ -16,7 +16,7 @@ from typing import Optional
 from flask import Flask, render_template, request, jsonify, send_file
 from influxdb_client import InfluxDBClient
 
-from .config import Config, ALLOWED_FUEL_TYPES
+from .config import Config, ALLOWED_FUEL_TYPES, setup_logging
 from .data import FuelDataFetcher
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,6 +26,28 @@ app = Flask(__name__, template_folder='../templates')
 # Global config instance
 config: Optional[Config] = None
 fetcher: Optional[FuelDataFetcher] = None
+
+
+def create_app():
+    """Create and configure the Flask application."""
+    global config
+    
+    # Load configuration
+    config = Config()
+    
+    # Try loading from default file locations
+    config_path = os.getenv('CONFIG_FILE', 'config.yaml')
+    config.load_from_file(config_path)
+    
+    # Override with environment variables
+    config.load_from_env()
+    
+    # Setup logging
+    setup_logging(config.log_level)
+    _LOGGER.info("Web application logging initialized")
+    
+    init_app(config)
+    return app
 
 
 def init_app(config_obj: Config):
@@ -53,6 +75,7 @@ def init_app(config_obj: Config):
     # Ensure backup directory exists
     backup_dir = Path(config.data_dir) / 'backups'
     backup_dir.mkdir(parents=True, exist_ok=True)
+
 
 
 @app.route('/')

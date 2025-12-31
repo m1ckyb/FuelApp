@@ -37,5 +37,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose port for web UI
 EXPOSE 5000
 
-# Default command - run web UI
-CMD ["python", "run.py", "--web", "--host", "0.0.0.0", "--port", "5000"]
+# Default command - run web UI with Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "--access-logfile", "-", "--error-logfile", "-", "app.web:create_app()"]

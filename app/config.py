@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import yaml
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -15,6 +16,23 @@ from dotenv import load_dotenv
 _LOGGER = logging.getLogger(__name__)
 
 # --- Constants ---
+# ...
+# --- Logging ---
+
+def setup_logging(log_level: str):
+    """Configure logging for the application."""
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
+
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
 
 # Data key for fuel station coordinator
 DATA_NSW_FUEL_STATION = "nsw_fuel_station"

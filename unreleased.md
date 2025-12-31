@@ -7,6 +7,8 @@
 - Added `influxdb2-cli` to the Docker image to support backup operations.
 - Added station name display to the Stations management page.
 - Redesigned the Web UI with a modern dark theme inspired by RouteGhost.
+- Implemented Gunicorn as the WSGI server for improved performance and reliability.
+- Added a separate `fuelapp-worker` service in `docker-compose.yml` to handle background data polling.
 
 ### Changed
 - Updated `dashboard.html` to allow viewing price trends without selecting a specific station or fuel type.
@@ -20,11 +22,13 @@
     - Merged data handling files into `app/data.py`.
     - Moved scripts to `scripts/` directory.
     - Added `run.py` as the application entry point.
+- Integrated application logging with Gunicorn output.
 
 ### Fixed
 - Fixed an issue where price trends chart would not load initially.
 - Fixed the "Edit" button functionality on the Stations management page.
 - Unified `card-header` background colors across all pages for a consistent theme.
+- Fixed missing background polling in Docker by introducing a dedicated worker process.
 
 ### Removed
 - Removed default stations (350 and 4711) from configuration files and the database.
