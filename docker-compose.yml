@@ -32,6 +32,7 @@ services:
       - INFLUXDB_TOKEN=my-super-secret-auth-token
       - INFLUXDB_ORG=fuelapp
       - INFLUXDB_BUCKET=fuel_prices
+      - DATA_DIR=/app/config
     volumes:
       # Mount config file - copy config.yaml.docker to config.yaml before starting
       # or edit docker-compose.yml to mount config.yaml.docker directly

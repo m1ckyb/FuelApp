@@ -22,23 +22,6 @@ from constants import ALLOWED_FUEL_TYPES
 _LOGGER = logging.getLogger(__name__)
 
 app = Flask(__name__)
-# Generate a random secret key if not provided via environment
-# Note: For production, set FLASK_SECRET_KEY environment variable to persist sessions
-secret_key = os.environ.get('FLASK_SECRET_KEY')
-if not secret_key:
-    # Try to load from a file, or generate and save a new one
-    secret_file = Path('.flask_secret')
-    if secret_file.exists():
-        with open(secret_file, 'r') as f:
-            secret_key = f.read().strip()
-    else:
-        secret_key = secrets.token_hex(32)
-        try:
-            with open(secret_file, 'w') as f:
-                f.write(secret_key)
-        except Exception:
-            _LOGGER.warning("Could not persist Flask secret key to file")
-app.config['SECRET_KEY'] = secret_key
 
 # Global config instance
 config: Optional[Config] = None
@@ -50,6 +33,22 @@ def init_app(config_obj: Config):
     global config, fetcher
     config = config_obj
     fetcher = FuelDataFetcher()
+
+    # Configure secret key from data_dir
+    secret_key = os.environ.get('FLASK_SECRET_KEY')
+    if not secret_key:
+        secret_file = Path(config.data_dir) / '.flask_secret'
+        if secret_file.exists():
+            with open(secret_file, 'r') as f:
+                secret_key = f.read().strip()
+        else:
+            secret_key = secrets.token_hex(32)
+            try:
+                with open(secret_file, 'w') as f:
+                    f.write(secret_key)
+            except Exception:
+                _LOGGER.warning("Could not persist Flask secret key to file")
+    app.config['SECRET_KEY'] = secret_key
 
 
 @app.route('/')

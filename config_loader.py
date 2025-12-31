@@ -19,12 +19,18 @@ _LOGGER = logging.getLogger(__name__)
 class Config:
     """Configuration for the NSW Fuel Station App."""
 
-    def __init__(self, db_path: str = "config.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """Initialize configuration with default values.
         
         Args:
             db_path: Path to SQLite database file
         """
+        self.data_dir = os.getenv('DATA_DIR', '.')
+        if db_path is None:
+            self.db_path = os.path.join(self.data_dir, "config.db")
+        else:
+            self.db_path = db_path
+
         self.influxdb_url: str = "http://localhost:8086"
         self.influxdb_token: str = ""
         self.influxdb_org: str = ""
@@ -34,7 +40,6 @@ class Config:
         self.poll_interval: int = DEFAULT_POLL_INTERVAL
         self.log_level: str = DEFAULT_LOG_LEVEL
         
-        self.db_path = db_path
         self.db: Optional[ConfigDatabase] = None
 
     def load_from_file(self, config_path: str) -> bool:
