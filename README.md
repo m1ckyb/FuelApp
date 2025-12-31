@@ -16,11 +16,71 @@ A standalone Python application that monitors NSW fuel station prices and stores
 
 ## Requirements
 
+### Docker (Recommended)
+- Docker Engine 20.10 or higher
+- Docker Compose V2
+
+### Manual Installation
 - Python 3.8 or higher
 - InfluxDB 2.x instance (local or cloud)
 - Internet connection to access NSW FuelCheck API
 
 ## Installation
+
+### Docker Installation (Recommended)
+
+The easiest way to run FuelApp is using Docker Compose, which will set up the application along with InfluxDB and Grafana automatically.
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/m1ckyb/FuelApp.git
+   cd FuelApp
+   ```
+
+2. **Create configuration file:**
+   ```bash
+   cp config.yaml.docker config.yaml
+   ```
+   
+   Edit `config.yaml` and update the station IDs and fuel types you want to monitor:
+   ```yaml
+   stations:
+     - station_id: 350  # Replace with your station ID
+       fuel_types:
+         - E10
+         - U91
+   ```
+
+3. **Start the services:**
+   ```bash
+   docker compose up -d
+   ```
+
+4. **Access the application:**
+   - **FuelApp Web UI**: http://localhost:5000
+   - **InfluxDB**: http://localhost:8086 (admin/adminpassword)
+   - **Grafana**: http://localhost:3000 (admin/admin)
+
+5. **View logs:**
+   ```bash
+   docker compose logs -f fuelapp
+   ```
+
+6. **Stop the services:**
+   ```bash
+   docker compose down
+   ```
+
+**Default Credentials:**
+- InfluxDB: `admin` / `adminpassword`
+- InfluxDB Token: `my-super-secret-auth-token`
+- InfluxDB Org: `fuelapp`
+- InfluxDB Bucket: `fuel_prices`
+- Grafana: `admin` / `admin`
+
+**Note:** For production use, change these default credentials in `docker-compose.yml`.
+
+### Manual Installation
 
 1. **Clone the repository:**
    ```bash
