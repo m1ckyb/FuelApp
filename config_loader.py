@@ -125,7 +125,13 @@ class Config:
             self.influxdb_token = settings.get('influxdb_token', self.influxdb_token)
             self.influxdb_org = settings.get('influxdb_org', self.influxdb_org)
             self.influxdb_bucket = settings.get('influxdb_bucket', self.influxdb_bucket)
-            self.poll_interval = int(settings.get('poll_interval', self.poll_interval))
+            
+            # Parse poll_interval with error handling
+            try:
+                self.poll_interval = int(settings.get('poll_interval', self.poll_interval))
+            except (ValueError, TypeError):
+                _LOGGER.warning("Invalid poll_interval in database, using default: %d", self.poll_interval)
+            
             self.log_level = settings.get('log_level', self.log_level)
             
             # Load stations

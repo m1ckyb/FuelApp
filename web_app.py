@@ -286,11 +286,12 @@ def get_config():
     if parsed_url.port:
         safe_url += f":{parsed_url.port}"
     
+    # Return full URL for editing, but hide token value
     return jsonify({
-        'influxdb_url': config.influxdb_url,  # Return full URL for editing
+        'influxdb_url': config.influxdb_url,
         'influxdb_org': config.influxdb_org,
         'influxdb_bucket': config.influxdb_bucket,
-        'influxdb_token': '***' if config.influxdb_token else '',  # Hide token but show if set
+        'influxdb_token': '***' if config.influxdb_token else '',
         'poll_interval': config.poll_interval,
         'log_level': config.log_level
     })
