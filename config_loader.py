@@ -138,3 +138,4 @@ class Config:
 
         _LOGGER.info("Configuration validated successfully")
         return True
+

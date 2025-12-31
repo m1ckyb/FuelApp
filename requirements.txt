@@ -3,3 +3,4 @@ influxdb-client>=1.40.0
 PyYAML>=6.0
 schedule>=1.2.0
 python-dotenv>=1.0.0
+

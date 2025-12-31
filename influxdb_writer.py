@@ -141,3 +141,4 @@ class InfluxDBWriter:
         if self.client:
             self.client.close()
             _LOGGER.info("InfluxDB connection closed")
+

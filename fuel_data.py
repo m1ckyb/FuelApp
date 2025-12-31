@@ -56,3 +56,4 @@ class FuelDataFetcher:
         except Exception as exc:
             _LOGGER.exception("Unexpected error fetching fuel data: %s", exc)
             return None
+
