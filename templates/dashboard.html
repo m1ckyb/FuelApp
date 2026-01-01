@@ -439,6 +439,20 @@
                         trendIcon = '<i class="bi bi-dash-lg text-secondary ms-1"></i>';
                     }
 
+                    const lastUpdatedISO = station.last_updated ? station.last_updated[fuelType] : null;
+                    let lastUpdatedStr = '';
+                    if (lastUpdatedISO) {
+                        try {
+                            const date = new Date(lastUpdatedISO);
+                            if (!isNaN(date.getTime()) && window.dateFns) {
+                                const distance = dateFns.formatDistanceToNow(date, { addSuffix: true });
+                                lastUpdatedStr = `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${distance}</div>`;
+                            }
+                        } catch (e) {
+                            console.error('Date parsing error', e);
+                        }
+                    }
+
                     html += `
                         <div class="col-md-3 col-sm-4 col-6">
                             <div class="price-card h-100" style="cursor: pointer; transition: transform 0.2s;" 
@@ -447,6 +461,7 @@
                                  onmouseout="this.style.transform='scale(1)'">
                                 <div class="price-label">${escapeHtml(fuelType)}</div>
                                 <div class="price-value">${priceInCents}¢${trendIcon}</div>
+                                ${lastUpdatedStr}
                             </div>
                         </div>
                     `;

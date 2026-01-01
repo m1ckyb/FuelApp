@@ -321,19 +321,24 @@ def get_current_prices():
         
         fuel_types = fuel_types_by_station.get(station_id, [])
         prices = {}
+        last_updated = {}
         trends = {}
         
         for fuel_type in fuel_types:
-            price = data.prices.get((station_id, fuel_type))
-            if price is not None:
-                prices[fuel_type] = price
+            price_obj = data.prices.get((station_id, fuel_type))
+            if price_obj is not None:
+                price_val = price_obj.price
+                prices[fuel_type] = price_val
+                
+                if hasattr(price_obj, 'last_updated') and price_obj.last_updated:
+                    last_updated[fuel_type] = price_obj.last_updated.isoformat()
                 
                 # Determine trend
                 last_price = last_prices.get((station_id, fuel_type))
                 if last_price is not None:
-                    if price > last_price:
+                    if price_val > last_price:
                         trends[fuel_type] = 'up'
-                    elif price < last_price:
+                    elif price_val < last_price:
                         trends[fuel_type] = 'down'
                     else:
                         trends[fuel_type] = 'stable'
@@ -345,6 +350,7 @@ def get_current_prices():
             'station_name': station.name,
             'station_address': station.address,
             'prices': prices,
+            'last_updated': last_updated,
             'trends': trends
         })
     

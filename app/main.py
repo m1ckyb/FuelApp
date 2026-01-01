@@ -105,9 +105,9 @@ class FuelApp:
                     
                     # Publish States
                     for fuel_type in fuel_types:
-                        price = data.prices.get((station_id, fuel_type))
-                        if price is not None:
-                            self.mqtt.publish_state(station_id, fuel_type, price)
+                        price_obj = data.prices.get((station_id, fuel_type))
+                        if price_obj is not None:
+                            self.mqtt.publish_state(station_id, fuel_type, price_obj.price)
 
     def run_once(self):
         """Run a single update cycle."""

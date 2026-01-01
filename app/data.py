@@ -19,7 +19,7 @@ class StationPriceData:
     """Data structure for O(1) price and name lookups."""
 
     stations: dict[int, Station]
-    prices: dict[tuple[int, str], float]
+    prices: dict[tuple[int, str], Any]
 
 
 class FuelDataFetcher:
@@ -38,10 +38,11 @@ class FuelDataFetcher:
             
             # Restructure prices and station details to be indexed by station code
             # for O(1) lookup
+            # Store the full Price object to retain metadata like last_updated
             station_data = StationPriceData(
                 stations={s.code: s for s in raw_price_data.stations},
                 prices={
-                    (p.station_code, p.fuel_type): p.price 
+                    (p.station_code, p.fuel_type): p
                     for p in raw_price_data.prices
                 },
             )
@@ -141,9 +142,9 @@ class InfluxDBWriter:
                 fuel_types = fuel_types_by_station.get(station_id, [])
                 
                 for fuel_type in fuel_types:
-                    price = data.prices.get((station_id, fuel_type))
+                    price_obj = data.prices.get((station_id, fuel_type))
                     
-                    if price is None:
+                    if price_obj is None:
                         _LOGGER.debug(
                             "Price not available for station %d, fuel type %s",
                             station_id,
@@ -158,7 +159,7 @@ class InfluxDBWriter:
                         .tag("station_name", station.name)
                         .tag("station_address", station.address)
                         .tag("fuel_type", fuel_type)
-                        .field("price", float(price))
+                        .field("price", float(price_obj.price))
                         .time(timestamp)
                     )
                     points.append(point)
@@ -167,7 +168,7 @@ class InfluxDBWriter:
                         "Prepared point: station=%s, fuel=%s, price=%.1f",
                         station.name,
                         fuel_type,
-                        price
+                        price_obj.price
                     )
             
             if not points:
@@ -182,9 +183,3 @@ class InfluxDBWriter:
         except Exception as exc:
             _LOGGER.error("Failed to write data to InfluxDB: %s", exc)
             return False
-
-    def close(self):
-        """Close the InfluxDB connection."""
-        if self.client:
-            self.client.close()
-            _LOGGER.info("InfluxDB connection closed")
