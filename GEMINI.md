@@ -24,6 +24,22 @@ The application is built with a modular architecture:
 - `unreleased.md`: Buffer for upcoming release notes.
 - `SECURITY/`: Contains historical security scan reports (Bandit, pip-audit).
 
+## Session Initialization
+When a new chat session begins, I must first read the following files to establish a complete understanding of the project's current state, architecture, and purpose:
+- `GEMINI.md` (for architectural principles and workflows)
+- `README.md` (for project overview and deployment instructions)
+- `summary.md` (for a high-level feature summary)
+- `CHANGELOG.md` (for recent changes and version history)
+- `unreleased.md` (for upcoming changes and known bugs)
+
+This ensures all subsequent responses are informed by the full project context.
+
+## Development Workflow
+### Continuous Documentation
+After every feature addition, change, or bug fix, `unreleased.md` must be updated immediately with a concise summary of the change under the appropriate heading (`### Added`, `### Changed`, `### Fixed`). This ensures the changelog is always ready for the next release.
+
+*Note: Changes made to `GEMINI.md` itself do not need to be documented in `unreleased.md`.*
+
 ## Release Process
 
 ### Make a dev release
