@@ -225,6 +225,43 @@ def get_current_prices():
         for s in config.stations
     }
     
+    # Fetch last known prices from InfluxDB for comparison
+    last_prices = {}
+    if config:
+        try:
+            client = InfluxDBClient(
+                url=config.influxdb_url,
+                token=config.influxdb_token,
+                org=config.influxdb_org
+            )
+            query_api = client.query_api()
+            
+            # Query for the last price of each station/fuel type in the last 30 days
+            query = f'from(bucket: "{config.influxdb_bucket}")'
+            query += ' |> range(start: -30d)'
+            query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
+            query += ' |> filter(fn: (r) => r._field == "price")'
+            query += ' |> last()'
+            
+            tables = query_api.query(query)
+            
+            for table in tables:
+                for record in table.records:
+                    sid = record.values.get('station_id')
+                    ft = record.values.get('fuel_type')
+                    price = record.get_value()
+                    if sid and ft:
+                        # Convert sid to int if it's stored as string
+                        try:
+                            sid = int(sid)
+                            last_prices[(sid, ft)] = price
+                        except ValueError:
+                            pass
+            
+            client.close()
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch last prices for comparison: %s", e)
+
     result = []
     for station_id in station_ids:
         station = data.stations.get(station_id)
@@ -233,17 +270,31 @@ def get_current_prices():
         
         fuel_types = fuel_types_by_station.get(station_id, [])
         prices = {}
+        trends = {}
         
         for fuel_type in fuel_types:
             price = data.prices.get((station_id, fuel_type))
             if price is not None:
                 prices[fuel_type] = price
+                
+                # Determine trend
+                last_price = last_prices.get((station_id, fuel_type))
+                if last_price is not None:
+                    if price > last_price:
+                        trends[fuel_type] = 'up'
+                    elif price < last_price:
+                        trends[fuel_type] = 'down'
+                    else:
+                        trends[fuel_type] = 'stable'
+                else:
+                    trends[fuel_type] = 'unknown'
         
         result.append({
             'station_id': station_id,
             'station_name': station.name,
             'station_address': station.address,
-            'prices': prices
+            'prices': prices,
+            'trends': trends
         })
     
     return jsonify({'prices': result})

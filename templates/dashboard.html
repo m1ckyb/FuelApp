@@ -54,12 +54,87 @@
             </div>
         </div>
     </div>
+
+    <!-- Price History Modal -->
+    <div class="modal fade" id="priceHistoryModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="priceHistoryModalLabel">Price History</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-center mb-3">
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="historyDays" id="days7" value="7" checked onchange="updateModalChart()">
+                            <label class="btn btn-outline-primary" for="days7">7 Days</label>
+
+                            <input type="radio" class="btn-check" name="historyDays" id="days14" value="14" onchange="updateModalChart()">
+                            <label class="btn btn-outline-primary" for="days14">14 Days</label>
+
+                            <input type="radio" class="btn-check" name="historyDays" id="days28" value="28" onchange="updateModalChart()">
+                            <label class="btn btn-outline-primary" for="days28">28 Days</label>
+
+                            <input type="radio" class="btn-check" name="historyDays" id="days90" value="90" onchange="updateModalChart()">
+                            <label class="btn btn-outline-primary" for="days90">90 Days</label>
+                        </div>
+                    </div>
+                    <div style="position: relative; height: 400px; width: 100%;">
+                        <canvas id="modalPriceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Station Price History Modal -->
+    <div class="modal fade" id="stationPriceHistoryModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="stationPriceHistoryModalLabel">Price History</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-center mb-3">
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="stationHistoryDays" id="stationDays7" value="7" checked onchange="updateStationModalChart()">
+                            <label class="btn btn-outline-primary" for="stationDays7">7 Days</label>
+
+                            <input type="radio" class="btn-check" name="stationHistoryDays" id="stationDays14" value="14" onchange="updateStationModalChart()">
+                            <label class="btn btn-outline-primary" for="stationDays14">14 Days</label>
+
+                            <input type="radio" class="btn-check" name="stationHistoryDays" id="stationDays28" value="28" onchange="updateStationModalChart()">
+                            <label class="btn btn-outline-primary" for="stationDays28">28 Days</label>
+
+                            <input type="radio" class="btn-check" name="stationHistoryDays" id="stationDays90" value="90" onchange="updateStationModalChart()">
+                            <label class="btn btn-outline-primary" for="stationDays90">90 Days</label>
+                        </div>
+                    </div>
+                    <div style="position: relative; height: 400px; width: 100%;">
+                        <canvas id="stationModalPriceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
     let priceChart = null;
     let stationsData = [];
+    
+    // Modal related variables
+    let modalChart = null;
+    let currentModalStationId = null;
+    let currentModalFuelType = null;
+    let priceHistoryModal = null;
+    
+    // Station Modal related variables
+    let stationPriceHistoryModal = null;
+    let stationModalChart = null;
+    let currentStationModalId = null;
     
     // Helper function to escape HTML to prevent XSS
     function escapeHtml(text) {
@@ -71,8 +146,218 @@
     // Load current prices on page load
     document.addEventListener('DOMContentLoaded', function() {
         loadCurrentPrices();
+        priceHistoryModal = new bootstrap.Modal(document.getElementById('priceHistoryModal'));
+        stationPriceHistoryModal = new bootstrap.Modal(document.getElementById('stationPriceHistoryModal'));
     });
+
+    function openStationHistoryModal(stationId, stationName) {
+        currentStationModalId = stationId;
+        
+        document.getElementById('stationPriceHistoryModalLabel').textContent = `${stationName} - Price History`;
+        
+        // Reset to 7 days
+        document.getElementById('stationDays7').checked = true;
+        
+        stationPriceHistoryModal.show();
+        updateStationModalChart();
+    }
+
+    async function updateStationModalChart() {
+        if (!currentStationModalId) return;
+        
+        const days = document.querySelector('input[name="stationHistoryDays"]:checked').value;
+        
+        try {
+            // Fetch history for ALL fuel types for this station
+            const url = `/api/prices/history?days=${days}&station_id=${currentStationModalId}`;
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (!response.ok) throw new Error(data.error || 'Failed to load history');
+            
+            displayStationModalChart(data.history);
+        } catch (error) {
+            console.error('Error loading modal history:', error);
+        }
+    }
+
+    function displayStationModalChart(history) {
+        const ctx = document.getElementById('stationModalPriceChart').getContext('2d');
+        
+        if (stationModalChart) {
+            stationModalChart.destroy();
+        }
+
+        // Group data by fuel_type
+        const groups = {};
+        
+        history.forEach(item => {
+            const key = item.fuel_type;
+            if (!groups[key]) {
+                groups[key] = {
+                    label: item.fuel_type,
+                    data: []
+                };
+            }
+            groups[key].data.push({
+                x: new Date(item.time),
+                y: item.price
+            });
+        });
+
+        const colors = [
+            'rgb(59, 130, 246)', 'rgb(239, 68, 68)', 'rgb(34, 197, 94)',
+            'rgb(245, 158, 11)', 'rgb(168, 85, 247)', 'rgb(236, 72, 153)',
+            'rgb(20, 184, 166)', 'rgb(249, 115, 22)'
+        ];
+
+        const datasets = Object.values(groups).map((group, index) => ({
+            label: group.label,
+            data: group.data,
+            borderColor: colors[index % colors.length],
+            backgroundColor: colors[index % colors.length].replace('rgb', 'rgba').replace(')', ', 0.1)'),
+            borderWidth: 2,
+            tension: 0.4,
+            fill: false
+        }));
+
+        stationModalChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: datasets
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                plugins: {
+                    legend: { display: true },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return `${context.dataset.label}: ${context.parsed.y.toFixed(1)}¢`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'day',
+                            displayFormats: { day: 'MMM d' }
+                        },
+                        grid: { color: '#334155' },
+                        ticks: { color: '#94a3b8' }
+                    },
+                    y: {
+                        display: true,
+                        grid: { color: '#334155' },
+                        ticks: {
+                            color: '#94a3b8',
+                            callback: value => value.toFixed(1) + '¢'
+                        }
+                    }
+                }
+            }
+        });
+    }
     
+    function openPriceHistoryModal(stationId, stationName, fuelType) {
+        currentModalStationId = stationId;
+        currentModalFuelType = fuelType;
+        
+        document.getElementById('priceHistoryModalLabel').textContent = `${stationName} - ${fuelType}`;
+        
+        // Reset to 7 days
+        document.getElementById('days7').checked = true;
+        
+        priceHistoryModal.show();
+        updateModalChart();
+    }
+
+    async function updateModalChart() {
+        if (!currentModalStationId || !currentModalFuelType) return;
+        
+        const days = document.querySelector('input[name="historyDays"]:checked').value;
+        
+        try {
+            const url = `/api/prices/history?days=${days}&station_id=${currentModalStationId}&fuel_type=${currentModalFuelType}`;
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (!response.ok) throw new Error(data.error || 'Failed to load history');
+            
+            displayModalChart(data.history, currentModalFuelType);
+        } catch (error) {
+            console.error('Error loading modal history:', error);
+        }
+    }
+
+    function displayModalChart(history, fuelType) {
+        const ctx = document.getElementById('modalPriceChart').getContext('2d');
+        
+        if (modalChart) {
+            modalChart.destroy();
+        }
+
+        const dataPoints = history.map(item => ({
+            x: new Date(item.time),
+            y: item.price
+        }));
+
+        modalChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: `${fuelType} Price`,
+                    data: dataPoints,
+                    borderColor: 'rgb(59, 130, 246)',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return `${context.parsed.y.toFixed(1)}¢`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'day',
+                            displayFormats: { day: 'MMM d' }
+                        },
+                        grid: { color: '#334155' },
+                        ticks: { color: '#94a3b8' }
+                    },
+                    y: {
+                        display: true,
+                        grid: { color: '#334155' },
+                        ticks: {
+                            color: '#94a3b8',
+                            callback: value => value.toFixed(1) + '¢'
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     async function loadCurrentPrices() {
         try {
             const response = await fetch('/api/prices/current');
@@ -120,7 +405,12 @@
                 <div class="col-12 mb-4">
                     <div class="card">
                         <div class="card-header">
-                            <div class="station-name">${escapeHtml(station.station_name)}</div>
+                            <div class="station-name">
+                                <a href="#" class="text-decoration-none text-white" 
+                                   onclick="openStationHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}')">
+                                    ${escapeHtml(station.station_name)}
+                                </a>
+                            </div>
                             <div class="station-address">${escapeHtml(station.station_address)}</div>
                         </div>
                         <div class="card-body">
@@ -138,12 +428,25 @@
                 for (const fuelType in station.prices) {
                     const price = station.prices[fuelType];
                     const priceInCents = price.toFixed(1);
+                    const trend = station.trends ? station.trends[fuelType] : 'unknown';
                     
+                    let trendIcon = '';
+                    if (trend === 'up') {
+                        trendIcon = '<i class="bi bi-caret-up-fill text-danger ms-1"></i>';
+                    } else if (trend === 'down') {
+                        trendIcon = '<i class="bi bi-caret-down-fill text-success ms-1"></i>';
+                    } else if (trend === 'stable') {
+                        trendIcon = '<i class="bi bi-dash-lg text-secondary ms-1"></i>';
+                    }
+
                     html += `
                         <div class="col-md-3 col-sm-4 col-6">
-                            <div class="price-card">
+                            <div class="price-card h-100" style="cursor: pointer; transition: transform 0.2s;" 
+                                 onclick="openPriceHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}', '${fuelType}')"
+                                 onmouseover="this.style.transform='scale(1.05)'" 
+                                 onmouseout="this.style.transform='scale(1)'">
                                 <div class="price-label">${escapeHtml(fuelType)}</div>
-                                <div class="price-value">${priceInCents}¢</div>
+                                <div class="price-value">${priceInCents}¢${trendIcon}</div>
                             </div>
                         </div>
                     `;

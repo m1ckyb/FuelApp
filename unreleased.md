@@ -1,4 +1,5 @@
 ### Added
+- Added a station-wide price history modal, accessible by clicking the station name on the Dashboard, displaying trends for all monitored fuel types at once.
 - Added automated security scanning (Bandit and pip-audit) with reports stored in the `SECURITY/` directory.
 - Added `DATA_DIR` environment variable support for persistent storage.
 - Moved `config.db` and `.flask_secret` to the configured data directory (defaults to `/app/config` in Docker).
@@ -14,6 +15,10 @@
 - Added `croniter` and `tzdata` dependencies.
 
 ### Changed
+- Updated price cards on the Dashboard to use visual indicators for price trends:
+    - Red up-triangle for price rise.
+    - Green down-triangle for price drop.
+    - Grey dash for stable price.
 - Updated `dashboard.html` to allow viewing price trends without selecting a specific station or fuel type.
 - Updated `web_app.py` logic for price history API to handle optional filters.
 - Unified the page layout and container widths across the entire application.
