@@ -96,6 +96,37 @@ def settings():
     return render_template('settings.html')
 
 
+@app.route('/api/stations/lookup', methods=['GET'])
+def lookup_station():
+    """Lookup station details and available fuel types."""
+    if not fetcher:
+        return jsonify({'error': 'Fetcher not initialized'}), 500
+    
+    station_id = request.args.get('station_id', type=int)
+    if not station_id:
+        return jsonify({'error': 'station_id is required'}), 400
+        
+    data = fetcher.fetch_station_price_data()
+    if not data:
+        return jsonify({'error': 'Failed to fetch data'}), 500
+        
+    station = data.stations.get(station_id)
+    if not station:
+        return jsonify({'error': 'Station not found'}), 404
+        
+    # Find available fuel types for this station
+    available_fuel_types = []
+    for (sid, fuel_type) in data.prices.keys():
+        if sid == station_id:
+            available_fuel_types.append(fuel_type)
+            
+    return jsonify({
+        'station_id': station_id,
+        'station_name': station.name,
+        'available_fuel_types': sorted(available_fuel_types)
+    })
+
+
 @app.route('/api/stations', methods=['GET'])
 def get_stations():
     """Get all configured stations."""
@@ -113,8 +144,18 @@ def get_stations():
         except Exception as e:
             _LOGGER.warning("Failed to fetch station names: %s", e)
     
+    # Fetch stations from DB if available to avoid stale data across workers
+    stations_list = config.stations
+    if config.db:
+        try:
+            db_stations = config.db.get_stations()
+            if db_stations is not None:
+                stations_list = db_stations
+        except Exception as e:
+            _LOGGER.error("Failed to fetch stations from DB: %s", e)
+
     result = []
-    for station in config.stations:
+    for station in stations_list:
         sid = station['station_id']
         result.append({
             'station_id': sid,
@@ -218,11 +259,21 @@ def get_current_prices():
     if not data:
         return jsonify({'error': 'Failed to fetch fuel prices'}), 500
     
+    # Fetch stations from DB if available to avoid stale data
+    stations_list = config.stations
+    if config.db:
+        try:
+            db_stations = config.db.get_stations()
+            if db_stations is not None:
+                stations_list = db_stations
+        except Exception as e:
+            _LOGGER.error("Failed to fetch stations from DB: %s", e)
+
     # Filter for configured stations
-    station_ids = [s['station_id'] for s in config.stations]
+    station_ids = [s['station_id'] for s in stations_list]
     fuel_types_by_station = {
         s['station_id']: s['fuel_types'] 
-        for s in config.stations
+        for s in stations_list
     }
     
     # Fetch last known prices from InfluxDB for comparison
@@ -391,6 +442,11 @@ def get_config():
         'influxdb_org': config.influxdb_org,
         'influxdb_bucket': config.influxdb_bucket,
         'influxdb_token': '***' if config.influxdb_token else '',
+        'mqtt_broker': config.mqtt_broker,
+        'mqtt_port': config.mqtt_port,
+        'mqtt_user': config.mqtt_user,
+        'mqtt_password': '***' if config.mqtt_password else '',
+        'mqtt_discovery_prefix': config.mqtt_discovery_prefix,
         'poll_interval': config.poll_interval,
         'cron_schedule': config.cron_schedule,
         'timezone': config.timezone,
@@ -419,6 +475,25 @@ def update_config():
     
     if 'influxdb_bucket' in data:
         config.influxdb_bucket = data['influxdb_bucket']
+        
+    # Update MQTT settings
+    if 'mqtt_broker' in data:
+        config.mqtt_broker = data['mqtt_broker']
+    
+    if 'mqtt_port' in data:
+        try:
+            config.mqtt_port = int(data['mqtt_port'])
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid MQTT port'}), 400
+            
+    if 'mqtt_user' in data:
+        config.mqtt_user = data['mqtt_user']
+        
+    if 'mqtt_password' in data and data['mqtt_password'] != '***':
+        config.mqtt_password = data['mqtt_password']
+        
+    if 'mqtt_discovery_prefix' in data:
+        config.mqtt_discovery_prefix = data['mqtt_discovery_prefix']
     
     # Update app settings
     if 'poll_interval' in data:

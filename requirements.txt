@@ -6,4 +6,5 @@ python-dotenv>=1.0.0
 Flask>=3.0.0
 gunicorn>=21.2.0
 croniter>=6.0.0
+paho-mqtt>=1.6.1
 

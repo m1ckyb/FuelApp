@@ -51,8 +51,14 @@
                 <form id="addStationForm">
                     <div class="mb-3">
                         <label for="stationId" class="form-label">Station ID</label>
-                        <input type="number" class="form-control" id="stationId" required
-                               placeholder="e.g., 350">
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="stationId" required
+                                   placeholder="e.g., 350">
+                            <button class="btn btn-outline-primary" type="button" id="checkStationBtn" onclick="lookupStation()">
+                                <i class="bi bi-search"></i> Check
+                            </button>
+                        </div>
+                        <div id="stationNameDisplay" class="form-text fw-bold mt-1" style="display: none;"></div>
                         <div class="form-text">
                             Find station IDs from the 
                             <a href="https://www.fuelcheck.nsw.gov.au/" target="_blank">NSW FuelCheck website</a>
@@ -95,7 +101,13 @@
                     
                     <div class="mb-3">
                         <label class="form-label">Station ID</label>
-                        <input type="text" class="form-control" id="editStationIdDisplay" disabled>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="editStationIdDisplay" disabled>
+                            <button class="btn btn-outline-primary" type="button" id="checkEditStationBtn" onclick="lookupEditStation()">
+                                <i class="bi bi-search"></i> Check
+                            </button>
+                        </div>
+                        <div id="editStationNameDisplay" class="form-text fw-bold mt-1" style="display: none;"></div>
                     </div>
                     
                     <div class="mb-3">
@@ -278,6 +290,129 @@
         return Array.from(checkboxes).map(cb => cb.value);
     }
     
+    async function lookupStation() {
+        const stationId = document.getElementById('stationId').value;
+        const btn = document.getElementById('checkStationBtn');
+        const nameDisplay = document.getElementById('stationNameDisplay');
+        
+        if (!stationId) {
+            showToast('Please enter a station ID', 'warning');
+            return;
+        }
+        
+        // Show loading state
+        const originalBtnContent = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+        btn.disabled = true;
+        nameDisplay.style.display = 'none';
+        
+        try {
+            const response = await fetch(`/api/stations/lookup?station_id=${stationId}`);
+            const data = await response.json();
+            
+            if (response.ok) {
+                // Show station name
+                nameDisplay.textContent = `Found: ${data.station_name}`;
+                nameDisplay.className = 'form-text text-success fw-bold mt-1';
+                nameDisplay.style.display = 'block';
+                
+                // Pre-select fuel types
+                // First uncheck all
+                document.querySelectorAll('#fuelTypesContainer input[type="checkbox"]').forEach(cb => cb.checked = false);
+                
+                // Check available ones
+                let foundCount = 0;
+                if (data.available_fuel_types && data.available_fuel_types.length > 0) {
+                    data.available_fuel_types.forEach(ft => {
+                        const cb = document.getElementById(`fuelTypesContainer_${ft}`);
+                        if (cb) {
+                            cb.checked = true;
+                            foundCount++;
+                        }
+                    });
+                    
+                    if (foundCount > 0) {
+                        showToast(`Found and selected ${foundCount} fuel types`, 'success');
+                    } else {
+                        showToast('Station found but fuel types not matching available options', 'warning');
+                    }
+                } else {
+                     showToast('Station found but no active prices/fuel types currently', 'warning');
+                }
+            } else {
+                nameDisplay.textContent = data.error || 'Station not found or no data available';
+                nameDisplay.className = 'form-text text-danger fw-bold mt-1';
+                nameDisplay.style.display = 'block';
+            }
+        } catch (error) {
+            console.error('Lookup error:', error);
+            showToast('Failed to lookup station', 'error');
+        } finally {
+            btn.innerHTML = originalBtnContent;
+            btn.disabled = false;
+        }
+    }
+
+    async function lookupEditStation() {
+        const stationId = document.getElementById('editStationId').value;
+        const btn = document.getElementById('checkEditStationBtn');
+        const nameDisplay = document.getElementById('editStationNameDisplay');
+        
+        if (!stationId) return;
+        
+        // Show loading state
+        const originalBtnContent = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+        btn.disabled = true;
+        nameDisplay.style.display = 'none';
+        
+        try {
+            const response = await fetch(`/api/stations/lookup?station_id=${stationId}`);
+            const data = await response.json();
+            
+            if (response.ok) {
+                // Show station name
+                nameDisplay.textContent = `Found: ${data.station_name}`;
+                nameDisplay.className = 'form-text text-success fw-bold mt-1';
+                nameDisplay.style.display = 'block';
+                
+                // Pre-select fuel types
+                // First uncheck all
+                document.querySelectorAll('#editFuelTypesContainer input[type="checkbox"]').forEach(cb => cb.checked = false);
+                
+                // Check available ones
+                let foundCount = 0;
+                if (data.available_fuel_types && data.available_fuel_types.length > 0) {
+                    data.available_fuel_types.forEach(ft => {
+                        const cb = document.getElementById(`editFuelTypesContainer_${ft}`);
+                        if (cb) {
+                            cb.checked = true;
+                            foundCount++;
+                        }
+                    });
+                    
+                    if (foundCount > 0) {
+                        showToast(`Found and selected ${foundCount} fuel types`, 'success');
+                    } else {
+                        showToast('Station found but fuel types not matching available options', 'warning');
+                    }
+                } else {
+                     showToast('Station found but no active prices/fuel types currently', 'warning');
+                }
+            } else {
+                nameDisplay.textContent = data.error || 'Station not found or no data available';
+                nameDisplay.className = 'form-text text-danger fw-bold mt-1';
+                nameDisplay.style.display = 'block';
+            }
+        } catch (error) {
+            console.error('Lookup error:', error);
+            showToast('Failed to lookup station', 'error');
+        } finally {
+            btn.innerHTML = originalBtnContent;
+            btn.disabled = false;
+        }
+    }
+
     async function addStation() {
         const stationId = parseInt(document.getElementById('stationId').value);
         const selectedFuelTypes = getSelectedFuelTypes('fuelTypesContainer');

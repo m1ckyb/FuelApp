@@ -16,23 +16,6 @@ from dotenv import load_dotenv
 _LOGGER = logging.getLogger(__name__)
 
 # --- Constants ---
-# ...
-# --- Logging ---
-
-def setup_logging(log_level: str):
-    """Configure logging for the application."""
-    numeric_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        numeric_level = logging.INFO
-
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-
 
 # Data key for fuel station coordinator
 DATA_NSW_FUEL_STATION = "nsw_fuel_station"
@@ -56,9 +39,27 @@ ALLOWED_FUEL_TYPES = [
 DEFAULT_POLL_INTERVAL = 60  # minutes
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_TIMEZONE = "Australia/Sydney"
+DEFAULT_MQTT_PORT = 1883
+DEFAULT_MQTT_DISCOVERY_PREFIX = "homeassistant"
 
 # Database schema version
 SCHEMA_VERSION = 1
+
+# --- Logging ---
+
+def setup_logging(log_level: str):
+    """Configure logging for the application."""
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
+
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
 
 
 # --- Database Manager ---
@@ -316,6 +317,12 @@ class Config:
         self.influxdb_org: str = ""
         self.influxdb_bucket: str = "fuel_prices"
         
+        self.mqtt_broker: str = ""
+        self.mqtt_port: int = DEFAULT_MQTT_PORT
+        self.mqtt_user: str = ""
+        self.mqtt_password: str = ""
+        self.mqtt_discovery_prefix: str = DEFAULT_MQTT_DISCOVERY_PREFIX
+        
         self.stations: list[dict] = []
         self.poll_interval: int = DEFAULT_POLL_INTERVAL
         self.cron_schedule: str = ""
@@ -357,6 +364,15 @@ class Config:
                 self.influxdb_token = influx_config.get('token', self.influxdb_token)
                 self.influxdb_org = influx_config.get('org', self.influxdb_org)
                 self.influxdb_bucket = influx_config.get('bucket', self.influxdb_bucket)
+            
+            # Load MQTT configuration (optional in YAML)
+            if 'mqtt' in config_data:
+                mqtt_config = config_data['mqtt']
+                self.mqtt_broker = mqtt_config.get('broker', self.mqtt_broker)
+                self.mqtt_port = mqtt_config.get('port', self.mqtt_port)
+                self.mqtt_user = mqtt_config.get('user', self.mqtt_user)
+                self.mqtt_password = mqtt_config.get('password', self.mqtt_password)
+                self.mqtt_discovery_prefix = mqtt_config.get('discovery_prefix', self.mqtt_discovery_prefix)
 
             # Load stations configuration
             if 'stations' in config_data:
@@ -420,6 +436,16 @@ class Config:
             self.influxdb_org = settings.get('influxdb_org', self.influxdb_org)
             self.influxdb_bucket = settings.get('influxdb_bucket', self.influxdb_bucket)
             
+            # Load MQTT settings
+            self.mqtt_broker = settings.get('mqtt_broker', self.mqtt_broker)
+            try:
+                self.mqtt_port = int(settings.get('mqtt_port', self.mqtt_port))
+            except (ValueError, TypeError):
+                pass
+            self.mqtt_user = settings.get('mqtt_user', self.mqtt_user)
+            self.mqtt_password = settings.get('mqtt_password', self.mqtt_password)
+            self.mqtt_discovery_prefix = settings.get('mqtt_discovery_prefix', self.mqtt_discovery_prefix)
+            
             # Parse poll_interval with error handling
             try:
                 self.poll_interval = int(settings.get('poll_interval', self.poll_interval))
@@ -458,6 +484,14 @@ class Config:
             self.db.set_setting('influxdb_token', self.influxdb_token)
             self.db.set_setting('influxdb_org', self.influxdb_org)
             self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
+            
+            # Save MQTT settings
+            self.db.set_setting('mqtt_broker', self.mqtt_broker)
+            self.db.set_setting('mqtt_port', str(self.mqtt_port))
+            self.db.set_setting('mqtt_user', self.mqtt_user)
+            self.db.set_setting('mqtt_password', self.mqtt_password)
+            self.db.set_setting('mqtt_discovery_prefix', self.mqtt_discovery_prefix)
+            
             self.db.set_setting('poll_interval', str(self.poll_interval))
             self.db.set_setting('cron_schedule', self.cron_schedule)
             self.db.set_setting('timezone', self.timezone)
@@ -495,6 +529,14 @@ class Config:
             self.db.set_setting('influxdb_token', self.influxdb_token)
             self.db.set_setting('influxdb_org', self.influxdb_org)
             self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
+            
+            # Save MQTT settings
+            self.db.set_setting('mqtt_broker', self.mqtt_broker)
+            self.db.set_setting('mqtt_port', str(self.mqtt_port))
+            self.db.set_setting('mqtt_user', self.mqtt_user)
+            self.db.set_setting('mqtt_password', self.mqtt_password)
+            self.db.set_setting('mqtt_discovery_prefix', self.mqtt_discovery_prefix)
+            
             self.db.set_setting('poll_interval', str(self.poll_interval))
             self.db.set_setting('cron_schedule', self.cron_schedule)
             self.db.set_setting('timezone', self.timezone)
@@ -520,6 +562,22 @@ class Config:
             self.influxdb_org = os.getenv('INFLUXDB_ORG')
         if os.getenv('INFLUXDB_BUCKET'):
             self.influxdb_bucket = os.getenv('INFLUXDB_BUCKET')
+            
+        # Load MQTT env vars
+        if os.getenv('MQTT_BROKER'):
+            self.mqtt_broker = os.getenv('MQTT_BROKER')
+        if os.getenv('MQTT_PORT'):
+            try:
+                self.mqtt_port = int(os.getenv('MQTT_PORT'))
+            except ValueError:
+                pass
+        if os.getenv('MQTT_USER'):
+            self.mqtt_user = os.getenv('MQTT_USER')
+        if os.getenv('MQTT_PASSWORD'):
+            self.mqtt_password = os.getenv('MQTT_PASSWORD')
+        if os.getenv('MQTT_DISCOVERY_PREFIX'):
+            self.mqtt_discovery_prefix = os.getenv('MQTT_DISCOVERY_PREFIX')
+            
         if os.getenv('TIMEZONE'):
             self.timezone = os.getenv('TIMEZONE')
         if os.getenv('CRON_SCHEDULE'):

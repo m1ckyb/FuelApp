@@ -15,6 +15,7 @@ from croniter import croniter
 
 from .config import Config, setup_logging
 from .data import FuelDataFetcher, InfluxDBWriter
+from .mqtt import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class FuelApp:
             org=config.influxdb_org,
             bucket=config.influxdb_bucket
         )
+        self.mqtt = MQTTClient(config)
         self.connected = False
 
     def connect(self) -> bool:
@@ -50,10 +52,17 @@ class FuelApp:
         return self.connected
 
     def fetch_and_store(self):
-        """Fetch fuel prices and store them in InfluxDB."""
+        """Fetch fuel prices and store them in InfluxDB and publish to MQTT."""
         if not self.connected:
             _LOGGER.error("Not connected to InfluxDB, skipping update")
             return
+
+        # Reload configuration to ensure we monitor the latest stations
+        if self.config.db:
+            try:
+                self.config.load_from_database()
+            except Exception as e:
+                _LOGGER.error("Failed to reload configuration: %s", e)
 
         _LOGGER.info("Starting fuel price update cycle")
         
@@ -82,6 +91,23 @@ class FuelApp:
             _LOGGER.info("Fuel price update completed successfully")
         else:
             _LOGGER.error("Failed to write fuel prices to InfluxDB")
+            
+        # Publish to MQTT
+        if self.mqtt and self.mqtt.connected:
+            _LOGGER.info("Publishing to MQTT")
+            for station_id in station_ids:
+                station = data.stations.get(station_id)
+                if station:
+                    fuel_types = fuel_types_by_station.get(station_id, [])
+                    
+                    # Publish Discovery (Idempotent)
+                    self.mqtt.publish_discovery(station_id, station.name, fuel_types)
+                    
+                    # Publish States
+                    for fuel_type in fuel_types:
+                        price = data.prices.get((station_id, fuel_type))
+                        if price is not None:
+                            self.mqtt.publish_state(station_id, fuel_type, price)
 
     def run_once(self):
         """Run a single update cycle."""
@@ -91,6 +117,7 @@ class FuelApp:
 
         self.fetch_and_store()
         self.writer.close()
+        self.mqtt.close()
         return True
 
     def run_scheduled(self):
@@ -169,6 +196,7 @@ class FuelApp:
         finally:
             _LOGGER.info("Shutting down...")
             self.writer.close()
+            self.mqtt.close()
 
 
 def main():

@@ -1,4 +1,9 @@
 ### Added
+- Added Home Assistant MQTT Integration:
+    - New MQTT configuration section in Settings.
+    - Automatic discovery of fuel stations as Home Assistant devices/sensors.
+    - Real-time price updates pushed to Home Assistant via MQTT.
+- Added ability to lookup and pre-select available fuel types when adding or editing a station.
 - Added a station-wide price history modal, accessible by clicking the station name on the Dashboard, displaying trends for all monitored fuel types at once.
 - Added automated security scanning (Bandit and pip-audit) with reports stored in the `SECURITY/` directory.
 - Added `DATA_DIR` environment variable support for persistent storage.
@@ -35,6 +40,8 @@
 - Switched Docker base image to `python:3.12-alpine` with multi-stage build, reducing image size by >50%.
 
 ### Fixed
+- Fixed form label visibility in Settings when editing options by ensuring they use the correct theme color.
+- Fixed an issue where station updates might not appear immediately due to caching across Gunicorn workers by ensuring the API always reads the latest configuration from the database.
 - Fixed an issue where price trends chart would not load initially.
 - Fixed the "Edit" button functionality on the Stations management page.
 - Unified `card-header` background colors across all pages for a consistent theme.
