@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3] - 2026-01-02
+### Added
+- MQTT: Added 'Test Connection' button to MQTT settings to verify broker connectivity.
+- Settings: Added 'Home Assistant Card Generator' to settings, allowing users to generate Lovelace YAML for ranked fuel price cards based on their configured stations.
+- Scripts: Added 'deduplicate_db.py' script to remove redundant historical data from InfluxDB while preserving price change history.
+- Dashboard: Added "Last Updated" timestamp next to the Refresh button to show when prices were last fetched.
+
+### Changed
+- Dashboard: Reverted caching implementation. The Dashboard now fetches fresh data from the NSW FuelCheck API on every load/refresh to ensure real-time accuracy.
+- Dashboard: Updated price card grid to be dynamic (flex-based), allowing up to 5 cards per row and expanding to fill available space.
+- UI: Made price cards slimmer with reduced padding and font sizes for better information density.
+- UI: Moved Home Assistant Card Generator to a dedicated modal with a cleaner interface, accessible from the "Home Assistant (MQTT)" card header.
+- UI: Improved layout of settings buttons to prevent visual overcrowding.
+- Backend: Optimized InfluxDB storage to only write data points when fuel prices actually change, significantly reducing database growth for stable prices.
+- UI: Reorganized Settings page layout into two balanced columns for better usability and reduced scrolling.
+- UI: Changed default fuel type selection in Price Trends chart to 'P98' (or first available) instead of 'All Fuel Types' to reduce visual clutter.
+
+### Fixed
+- Web App: Fixed timezone issue where the web interface (and logs) used UTC instead of the configured timezone (e.g., Australia/Sydney).
+- HA Generator: Fixed "Generate YAML" button responsiveness by improving error handling and fixing a broken JavaScript selector that prevented the button from working in some browsers.
+- Dashboard: Fixed price trend calculation to correctly show up/down arrows even when the current price has already been written to InfluxDB.
+- Dashboard: Improved 'Last Updated' display in dashboard to handle missing date libraries gracefully and ensure the time is always shown.
+- Dashboard: Fixed layout shift in Price Trends chart by enforcing a minimum height for the chart container.
+- Dashboard: Fixed page scroll jumping to top when clicking on a Station Name to view price history.
+- Settings: Fixed MQTT settings issue where saving with a blank password would clear the existing password.
+- Settings: Fixed MQTT "Test Connection" functionality to correctly use the stored password when the password field is left blank.
+- Settings: Fixed "Copy to Clipboard" functionality in Settings page to work in non-secure (HTTP) contexts by adding a fallback mechanism.
+
 ## [0.0.2] - 2026-01-01
 ### Added
 - Added Home Assistant MQTT Integration:
