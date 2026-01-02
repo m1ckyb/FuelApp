@@ -140,3 +140,51 @@ class MQTTClient:
         if self.client:
             self.client.loop_stop()
             self.client.disconnect()
+
+    @staticmethod
+    def test_connection(broker: str, port: int, user: str = None, password: str = None) -> tuple[bool, str]:
+        """
+        Test connection to MQTT broker.
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        try:
+            client = mqtt.Client(client_id="fuelapp_test_connection")
+            if user and password:
+                client.username_pw_set(user, password)
+            
+            # Use a mutable list to store result from callback
+            result = {'connected': False, 'error': 'Connection timed out'}
+            
+            def on_connect(client, userdata, flags, rc):
+                if rc == 0:
+                    result['connected'] = True
+                    result['error'] = None
+                else:
+                    result['connected'] = False
+                    result['error'] = f"Connection refused with code {rc}"
+            
+            client.on_connect = on_connect
+            
+            client.connect(broker, port, keepalive=10)
+            client.loop_start()
+            
+            # Wait for connection
+            import time
+            start = time.time()
+            while time.time() - start < 5:
+                if result['connected'] or (result['error'] != 'Connection timed out' and result['error'] is not None):
+                    break
+                time.sleep(0.1)
+                
+            client.loop_stop()
+            client.disconnect()
+            
+            if result['connected']:
+                return True, "Successfully connected to broker"
+            else:
+                return False, result['error']
+                
+        except Exception as e:
+            return False, str(e)

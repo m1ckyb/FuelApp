@@ -15,42 +15,10 @@
     
     <!-- Configuration -->
     <div class="row">
+        <!-- Left Column -->
         <div class="col-lg-6">
+            <!-- Application Settings -->
             <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-database-fill"></i> InfluxDB Configuration</span>
-                    <button class="btn btn-sm btn-primary" id="editInfluxBtn" onclick="editInfluxConfig()">
-                        <i class="bi bi-pencil-fill"></i> Edit
-                    </button>
-                </div>
-                <div class="card-body">
-                    <div id="configContainer">
-                        <div class="text-center py-5">
-                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
-                            <p class="text-secondary mt-3">Loading configuration...</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card mt-4">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-broadcast"></i> Home Assistant (MQTT)</span>
-                    <button class="btn btn-sm btn-primary" id="editMqttBtn" onclick="editMqttConfig()">
-                        <i class="bi bi-pencil-fill"></i> Edit
-                    </button>
-                </div>
-                <div class="card-body">
-                    <div id="mqttConfigContainer">
-                        <div class="text-center py-5">
-                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
-                            <p class="text-secondary mt-3">Loading settings...</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card mt-4">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <span><i class="bi bi-sliders"></i> Application Settings</span>
                     <button class="btn btn-sm btn-primary" id="editAppBtn" onclick="editAppSettings()">
@@ -62,6 +30,24 @@
                         <div class="text-center py-5">
                             <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
                             <p class="text-secondary mt-3">Loading settings...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- InfluxDB Configuration -->
+            <div class="card mt-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-database-fill"></i> InfluxDB Configuration</span>
+                    <button class="btn btn-sm btn-primary" id="editInfluxBtn" onclick="editInfluxConfig()">
+                        <i class="bi bi-pencil-fill"></i> Edit
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="configContainer">
+                        <div class="text-center py-5">
+                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+                            <p class="text-secondary mt-3">Loading configuration...</p>
                         </div>
                     </div>
                 </div>
@@ -90,8 +76,61 @@
             </div>
         </div>
         
+        <!-- Right Column -->
         <div class="col-lg-6">
+            <!-- Home Assistant (MQTT) -->
             <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-broadcast"></i> Home Assistant (MQTT)</span>
+                    <button class="btn btn-sm btn-primary" id="editMqttBtn" onclick="editMqttConfig()">
+                        <i class="bi bi-pencil-fill"></i> Edit
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="mqttConfigContainer">
+                        <div class="text-center py-5">
+                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+                            <p class="text-secondary mt-3">Loading settings...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- HA Card Generator -->
+            <div class="card mt-4">
+                <div class="card-header">
+                    <i class="bi bi-code-square"></i>
+                    Home Assistant Card Generator
+                </div>
+                <div class="card-body">
+                    <p class="small text-secondary">
+                        Generate Lovelace YAML for a ranked fuel price card. Requires 
+                        <a href="https://github.com/piitaya/lovelace-mushroom" target="_blank">Mushroom Cards</a>, 
+                        <a href="https://github.com/thomasloven/lovelace-auto-entities" target="_blank">Auto Entities</a>, and
+                        <a href="https://github.com/thomasloven/lovelace-card-mod" target="_blank">Card Mod</a>.
+                    </p>
+                    <div class="input-group mb-3">
+                        <select class="form-select" id="haFuelType">
+                            <option value="P98" selected>P98</option>
+                            <option value="P95">P95</option>
+                            <option value="U91">U91</option>
+                            <option value="E10">E10</option>
+                            <option value="DL">DL</option>
+                            <option value="LPG">LPG</option>
+                        </select>
+                        <button class="btn btn-primary" type="button" onclick="generateHACard()">Generate YAML</button>
+                    </div>
+                    <div id="haCardResult" style="display: none;">
+                        <textarea class="form-control font-monospace small" id="haCardOutput" rows="10" readonly style="background-color: #0f172a; color: #f8f9fa; border: 1px solid #334155;"></textarea>
+                        <button class="btn btn-outline-secondary btn-sm mt-2 w-100" onclick="copyHACard()">
+                            <i class="bi bi-clipboard"></i> Copy to Clipboard
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- System Information -->
+            <div class="card mt-4">
                 <div class="card-header">
                     <i class="bi bi-info-circle-fill"></i>
                     System Information
@@ -120,6 +159,7 @@
                 </div>
             </div>
             
+            <!-- About -->
             <div class="card mt-4">
                 <div class="card-header">
                     <i class="bi bi-shield-check"></i>
@@ -323,6 +363,9 @@
                     <button type="submit" class="btn btn-success">
                         <i class="bi bi-check-lg"></i> Save
                     </button>
+                    <button type="button" class="btn btn-info" onclick="testMqttConnection()">
+                        <i class="bi bi-lightning-fill"></i> Test Connection
+                    </button>
                     <button type="button" class="btn btn-secondary" onclick="cancelMqttEdit()">
                         <i class="bi bi-x-lg"></i> Cancel
                     </button>
@@ -371,6 +414,45 @@
         } catch (error) {
             console.error('Error saving MQTT configuration:', error);
             showToast(error.message, 'error');
+        }
+    }
+
+    async function testMqttConnection() {
+        const btn = document.querySelector('button[onclick="testMqttConnection()"]');
+        const originalText = btn.innerHTML;
+        
+        const formData = {
+            mqtt_broker: document.getElementById('mqtt_broker').value,
+            mqtt_port: parseInt(document.getElementById('mqtt_port').value),
+            mqtt_user: document.getElementById('mqtt_user').value,
+            mqtt_password: document.getElementById('mqtt_password').value
+        };
+        
+        try {
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Testing...';
+            btn.disabled = true;
+            
+            const response = await fetch('/api/config/mqtt/test', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Connection failed');
+            }
+            
+            showToast(data.message, 'success');
+        } catch (error) {
+            console.error('MQTT Test Error:', error);
+            showToast(error.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
         }
     }
     
@@ -492,6 +574,67 @@
         } catch (error) {
             console.error('Error saving settings:', error);
             showToast(error.message, 'error');
+        }
+    }
+
+    async function generateHACard() {
+        const fuelType = document.getElementById('haFuelType').value;
+        const btn = document.querySelector('button[onclick="generateHACard()"]');
+        const originalText = btn.innerHTML;
+        
+        try {
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+            btn.disabled = true;
+            
+            const response = await fetch('/api/ha/generate-card', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fuel_type: fuelType })
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to generate card');
+            }
+            
+            document.getElementById('haCardOutput').value = data.yaml;
+            document.getElementById('haCardResult').style.display = 'block';
+            
+        } catch (error) {
+            console.error('Error generating card:', error);
+            showToast(error.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    function copyHACard() {
+        const copyText = document.getElementById("haCardOutput");
+        copyText.select();
+        copyText.setSelectionRange(0, 99999); // For mobile devices
+        
+        // Try modern API
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(copyText.value).then(() => {
+                showToast('Copied to clipboard', 'success');
+            }).catch(err => {
+                console.error('Failed to copy: ', err);
+                fallbackCopy(copyText);
+            });
+        } else {
+            fallbackCopy(copyText);
+        }
+    }
+    
+    function fallbackCopy(element) {
+        try {
+            document.execCommand('copy');
+            showToast('Copied to clipboard', 'success');
+        } catch (err) {
+            console.error('Fallback copy failed: ', err);
+            showToast('Failed to copy. Please copy manually.', 'error');
         }
     }
     

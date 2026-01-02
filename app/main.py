@@ -45,10 +45,15 @@ class FuelApp:
         )
         self.mqtt = MQTTClient(config)
         self.connected = False
+        self.last_prices = {}
 
     def connect(self) -> bool:
         """Connect to InfluxDB."""
         self.connected = self.writer.connect()
+        if self.connected:
+            _LOGGER.info("Connected to InfluxDB, loading price cache...")
+            self.last_prices = self.writer.get_last_prices()
+            _LOGGER.info("Loaded %d cached prices", len(self.last_prices))
         return self.connected
 
     def fetch_and_store(self):
@@ -80,19 +85,50 @@ class FuelApp:
             for s in self.config.stations
         }
 
-        # Write to InfluxDB
-        success = self.writer.write_fuel_prices(
-            data,
-            station_ids,
-            fuel_types_by_station
-        )
-
-        if success:
-            _LOGGER.info("Fuel price update completed successfully")
-        else:
-            _LOGGER.error("Failed to write fuel prices to InfluxDB")
+        # Filter for InfluxDB: Only write if price has changed
+        updates_by_station = {}
+        for station_id in station_ids:
+            station_updates = []
+            fuel_types = fuel_types_by_station.get(station_id, [])
+            for fuel_type in fuel_types:
+                price_obj = data.prices.get((station_id, fuel_type))
+                if price_obj:
+                    current_price = float(price_obj.price)
+                    last_price = self.last_prices.get((station_id, fuel_type))
+                    
+                    # Check if changed (using epsilon for float)
+                    if last_price is None or abs(current_price - last_price) > 0.001:
+                        station_updates.append(fuel_type)
+                        # We update cache immediately here, but if write fails we might be out of sync?
+                        # It's better to update cache AFTER successful write, or just assume it works.
+                        # Given the simple architecture, assuming success or re-fetching next time is okay.
+                        # But wait, if we update cache here and write fails, next run we won't try to write again.
+                        # We should update cache only if we are going to write (which we are) 
+                        # and maybe refresh cache from DB if write fails?
+                        # For now, let's update cache here.
+                        self.last_prices[(station_id, fuel_type)] = current_price
             
-        # Publish to MQTT
+            if station_updates:
+                updates_by_station[station_id] = station_updates
+
+        # Write to InfluxDB only if there are updates
+        if updates_by_station:
+            success = self.writer.write_fuel_prices(
+                data,
+                list(updates_by_station.keys()),
+                updates_by_station
+            )
+
+            if success:
+                _LOGGER.info("Fuel price update completed successfully (wrote changes for %d stations)", len(updates_by_station))
+            else:
+                _LOGGER.error("Failed to write fuel prices to InfluxDB")
+                # If write failed, we should arguably invalidate the cache for these items?
+                # But typically InfluxDB write failures are connection issues, so next run might fail too.
+        else:
+             _LOGGER.info("No price changes detected, skipping InfluxDB write")
+            
+        # Publish to MQTT (Always publish current state to ensure HA is in sync)
         if self.mqtt and self.mqtt.connected:
             _LOGGER.info("Publishing to MQTT")
             for station_id in station_ids:

@@ -18,6 +18,7 @@ from influxdb_client import InfluxDBClient
 
 from .config import Config, ALLOWED_FUEL_TYPES, setup_logging
 from .data import FuelDataFetcher
+from .mqtt import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -287,12 +288,13 @@ def get_current_prices():
             )
             query_api = client.query_api()
             
-            # Query for the last price of each station/fuel type in the last 30 days
+            # Query for the last 50 prices to find recent price changes
             query = f'from(bucket: "{config.influxdb_bucket}")'
-            query += ' |> range(start: -30d)'
+            query += ' |> range(start: -7d)'
             query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
             query += ' |> filter(fn: (r) => r._field == "price")'
-            query += ' |> last()'
+            query += ' |> sort(columns: ["_time"], desc: true)'
+            query += ' |> limit(n: 50)'
             
             tables = query_api.query(query)
             
@@ -305,7 +307,10 @@ def get_current_prices():
                         # Convert sid to int if it's stored as string
                         try:
                             sid = int(sid)
-                            last_prices[(sid, ft)] = price
+                            key = (sid, ft)
+                            if key not in last_prices:
+                                last_prices[key] = []
+                            last_prices[key].append(price)
                         except ValueError:
                             pass
             
@@ -332,18 +337,29 @@ def get_current_prices():
                 
                 if hasattr(price_obj, 'last_updated') and price_obj.last_updated:
                     last_updated[fuel_type] = price_obj.last_updated.isoformat()
-                
-                # Determine trend
-                last_price = last_prices.get((station_id, fuel_type))
-                if last_price is not None:
-                    if price_val > last_price:
-                        trends[fuel_type] = 'up'
-                    elif price_val < last_price:
-                        trends[fuel_type] = 'down'
-                    else:
-                        trends[fuel_type] = 'stable'
                 else:
-                    trends[fuel_type] = 'unknown'
+                    _LOGGER.debug(f"No last_updated for {station_id} {fuel_type}")
+                
+                # Determine trend by finding the last price that was different
+                price_history = last_prices.get((station_id, fuel_type), [])
+                trend = 'unknown'
+                
+                if price_history:
+                    # Scan history for a price different from current
+                    for hist_price in price_history:
+                        # Use epsilon for float comparison
+                        if abs(price_val - hist_price) > 0.001:
+                            if price_val > hist_price:
+                                trend = 'up'
+                            else:
+                                trend = 'down'
+                            break
+                    
+                    # If we went through all history and found no difference, and history exists
+                    if trend == 'unknown' and price_history:
+                         trend = 'stable'
+                
+                trends[fuel_type] = trend
         
         result.append({
             'station_id': station_id,
@@ -495,7 +511,7 @@ def update_config():
     if 'mqtt_user' in data:
         config.mqtt_user = data['mqtt_user']
         
-    if 'mqtt_password' in data and data['mqtt_password'] != '***':
+    if 'mqtt_password' in data and data['mqtt_password'] and data['mqtt_password'] != '***':
         config.mqtt_password = data['mqtt_password']
         
     if 'mqtt_discovery_prefix' in data:
@@ -528,6 +544,161 @@ def update_config():
         return jsonify({'message': 'Configuration updated successfully'}), 200
     else:
         return jsonify({'error': 'Failed to save configuration'}), 500
+
+
+@app.route('/api/config/mqtt/test', methods=['POST'])
+def test_mqtt_config():
+    """Test MQTT configuration."""
+    data = request.get_json()
+    
+    broker = data.get('mqtt_broker')
+    port = data.get('mqtt_port', 1883)
+    user = data.get('mqtt_user')
+    password = data.get('mqtt_password')
+    
+    # Fallback to stored password if not provided and user matches (or is new)
+    # This handles the "leave blank to keep current" UI logic
+    if not password and config and config.mqtt_password:
+        password = config.mqtt_password
+
+    if not broker:
+        return jsonify({'error': 'Broker address is required'}), 400
+        
+    try:
+        port = int(port)
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid port'}), 400
+        
+    success, message = MQTTClient.test_connection(broker, port, user, password)
+    
+    if success:
+        return jsonify({'message': message}), 200
+    else:
+        return jsonify({'error': message}), 400
+
+
+def ha_slugify(text):
+    """Slugify a string for Home Assistant (lowercase, underscores)."""
+    import re
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s_]', '', text)
+    text = re.sub(r'\s+', '_', text)
+    return text
+
+@app.route('/api/ha/generate-card', methods=['POST'])
+def generate_ha_card():
+    """Generate Home Assistant Lovelace card configuration."""
+    if not config:
+        return jsonify({'error': 'Configuration not loaded'}), 500
+        
+    data = request.get_json()
+    fuel_type = data.get('fuel_type', 'P98')
+    
+    # Get all stations that support this fuel type
+    stations_list = config.stations
+    if config.db:
+        try:
+            db_stations = config.db.get_stations()
+            if db_stations is not None:
+                stations_list = db_stations
+        except Exception as e:
+            _LOGGER.error("Failed to fetch stations from DB: %s", e)
+            
+    # Try to fetch station details to get names
+    station_names = {}
+    if fetcher:
+        try:
+            station_data = fetcher.fetch_station_price_data()
+            if station_data and station_data.stations:
+                for s in station_data.stations.values():
+                    station_names[s.code] = s.name
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch station names: %s", e)
+
+    # Build list of entities for this fuel type
+    entities = []
+    for station in stations_list:
+        if fuel_type in station['fuel_types']:
+            sid = station['station_id']
+            name = station_names.get(sid, f"Station {sid}")
+            
+            # Construct entity ID based on HA discovery logic
+            # "fuelapp/sensor/{station_id}/{fuel_type}/state"
+            # Discovery name: "{fuel_type} Price"
+            # Device name: "{Station Name}"
+            # HA defaults to: sensor.{device_name}_{entity_name}
+            
+            device_slug = ha_slugify(name)
+            fuel_slug = ha_slugify(fuel_type)
+            entity_id = f"sensor.{device_slug}_{fuel_slug}_price"
+            
+            entities.append(entity_id)
+
+    # If no entities found, return error
+    if not entities:
+        return jsonify({'error': f'No stations found with fuel type {fuel_type}'}), 404
+        
+    # Generate the YAML content
+    fuel_slug = ha_slugify(fuel_type)
+    
+    # Create the prices list string for the template
+    # states('sensor.coles_express_bowral_p98') | float(0),
+    prices_list_str = ",\n                ".join([f"states('{e}') | float(0)" for e in entities])
+    
+    yaml_content = f"""type: custom:vertical-stack-in-card
+cards:
+  - type: custom:mushroom-title-card
+    title: ⛽ {fuel_type} Fuel Prices
+    alignment: center
+    card_mod:
+      style: |
+        ha-card {{
+          font-size: 18px;
+          font-weight: bold;
+        }}
+  - type: custom:auto-entities
+    card:
+      type: grid
+      columns: 1
+      square: false
+    card_param: cards
+    sort:
+      method: state
+      numeric: true
+      reverse: false
+    filter:
+      include:
+        - entity_id: sensor.*_{fuel_slug}_price
+          options:
+            type: custom:mushroom-template-card
+            icon: mdi:fuel
+            primary: >-
+              {{% set name = state_attr(entity, 'friendly_name') %}} {{% if name is
+              not none %}}
+                {{{{ name | replace(' {fuel_type} Price', '') }}}}
+              {{% else %}}
+                {{{{ entity }}}}
+              {{% endif %}}
+            secondary: "{{{{ states(entity) }}}} ¢/L"
+            icon_color: |
+              {{% set prices = [
+                {prices_list_str}
+              ] | select('>', 0) | list | sort %}}
+              {{% set value = states(entity) | float(0) %}}
+              {{% if prices | length > 0 and value > 0 %}}
+                {{% if value == prices[0] %}} green
+                {{% elif prices | length > 1 and value == prices[1] %}} darkgreen
+                {{% elif value == prices[-1] %}} red
+                {{% elif prices | length > 1 and value == prices[-2] %}} lightcoral
+                {{% else %}} orange
+                {{% endif %}}
+              {{% else %}}
+                grey
+              {{% endif %}}
+    exclude: []
+    show_empty: true"""
+    
+    return jsonify({'yaml': yaml_content})
 
 
 @app.route('/api/backup', methods=['POST'])

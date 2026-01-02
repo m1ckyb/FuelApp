@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any
 
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -107,6 +107,49 @@ class InfluxDBWriter:
         except Exception as exc:
             _LOGGER.error("Failed to connect to InfluxDB: %s", exc)
             return False
+
+    def get_last_prices(self) -> dict[tuple[int, str], float]:
+        """
+        Fetch the last recorded prices for all stations/fuel types.
+        
+        Returns:
+            Dict mapping (station_id, fuel_type) to last price
+        """
+        if not self.client:
+            _LOGGER.error("InfluxDB client not connected")
+            return {}
+
+        try:
+            query_api = self.client.query_api()
+            
+            # Query for the last price of each station/fuel type in the last 30 days
+            query = f'from(bucket: "{self.bucket}")'
+            query += ' |> range(start: -30d)'
+            query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
+            query += ' |> filter(fn: (r) => r._field == "price")'
+            query += ' |> last()'
+            
+            tables = query_api.query(query)
+            
+            last_prices = {}
+            for table in tables:
+                for record in table.records:
+                    sid = record.values.get('station_id')
+                    ft = record.values.get('fuel_type')
+                    price = record.get_value()
+                    
+                    if sid and ft:
+                        try:
+                            sid = int(sid)
+                            last_prices[(sid, ft)] = price
+                        except ValueError:
+                            pass
+                            
+            return last_prices
+            
+        except Exception as exc:
+            _LOGGER.error("Failed to fetch last prices: %s", exc)
+            return {}
 
     def write_fuel_prices(
         self,

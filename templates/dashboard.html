@@ -49,7 +49,9 @@
                     </div>
                 </div>
                 <div class="card-body">
-                    <canvas id="priceChart" height="80"></canvas>
+                    <div style="position: relative; min-height: 300px;">
+                        <canvas id="priceChart"></canvas>
+                    </div>
                 </div>
             </div>
         </div>
@@ -406,7 +408,7 @@
                     <div class="card">
                         <div class="card-header">
                             <div class="station-name">
-                                <a href="#" class="text-decoration-none text-white" 
+                                <a href="javascript:void(0)" class="text-decoration-none text-white" 
                                    onclick="openStationHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}')">
                                     ${escapeHtml(station.station_name)}
                                 </a>
@@ -444,9 +446,16 @@
                     if (lastUpdatedISO) {
                         try {
                             const date = new Date(lastUpdatedISO);
-                            if (!isNaN(date.getTime()) && window.dateFns) {
-                                const distance = dateFns.formatDistanceToNow(date, { addSuffix: true });
-                                lastUpdatedStr = `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${distance}</div>`;
+                            if (!isNaN(date.getTime())) {
+                                if (window.dateFns) {
+                                    const distance = dateFns.formatDistanceToNow(date, { addSuffix: true });
+                                    lastUpdatedStr = `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${distance}</div>`;
+                                } else {
+                                    console.warn('dateFns not found, falling back to simple string');
+                                    // Fallback if date-fns not loaded
+                                    const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                                    lastUpdatedStr = `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${dateStr}</div>`;
+                                }
                             }
                         } catch (e) {
                             console.error('Date parsing error', e);
@@ -509,8 +518,16 @@
         const stationSelect = document.getElementById('chartStation');
         const fuelTypeSelect = document.getElementById('chartFuelType');
         const selectedStationId = stationSelect.value;
+        const currentSelection = fuelTypeSelect.value;
         
-        fuelTypeSelect.innerHTML = '<option value="">All Fuel Types</option>';
+        // Remove "All Fuel Types" option by not adding it initially
+        fuelTypeSelect.innerHTML = ''; 
+        // Or keep it but make it not default? User said "just have 1 fuel type selected"
+        // Let's keep "All Fuel Types" as an option but select P98 by default.
+        const allOption = document.createElement('option');
+        allOption.value = "";
+        allOption.textContent = "All Fuel Types";
+        fuelTypeSelect.appendChild(allOption);
         
         let fuelTypes = new Set();
         if (selectedStationId === "") {
@@ -525,12 +542,28 @@
             }
         }
 
-        Array.from(fuelTypes).sort().forEach(fuelType => {
+        const sortedTypes = Array.from(fuelTypes).sort();
+        sortedTypes.forEach(fuelType => {
             const option = document.createElement('option');
             option.value = fuelType;
             option.textContent = fuelType;
             fuelTypeSelect.appendChild(option);
         });
+        
+        // Select P98 by default if available and no current selection (or "All" was selected),
+        // otherwise select the first available type.
+        // If user manually selected a type, try to keep it.
+        if (currentSelection && fuelTypes.has(currentSelection)) {
+            fuelTypeSelect.value = currentSelection;
+        } else {
+            if (fuelTypes.has("P98")) {
+                fuelTypeSelect.value = "P98";
+            } else if (sortedTypes.length > 0) {
+                fuelTypeSelect.value = sortedTypes[0];
+            } else {
+                fuelTypeSelect.value = ""; // Fallback to All
+            }
+        }
         
         loadPriceHistory();
     }
@@ -608,7 +641,7 @@
             },
             options: {
                 responsive: true,
-                maintainAspectRatio: true,
+                maintainAspectRatio: false,
                 interaction: {
                     mode: 'index',
                     intersect: false

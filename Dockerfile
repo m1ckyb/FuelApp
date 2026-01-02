@@ -49,6 +49,7 @@ COPY run.py .
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY app/ ./app/
 COPY templates/ ./templates/
+COPY scripts/ ./scripts/
 
 # Create config directory
 RUN mkdir -p /app/config
