@@ -82,9 +82,14 @@
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <span><i class="bi bi-broadcast"></i> Home Assistant (MQTT)</span>
-                    <button class="btn btn-sm btn-primary" id="editMqttBtn" onclick="editMqttConfig()">
-                        <i class="bi bi-pencil-fill"></i> Edit
-                    </button>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-light" onclick="openHAGeneratorModal()" title="Card Generator">
+                            <i class="bi bi-code-square"></i> Card Gen
+                        </button>
+                        <button class="btn btn-sm btn-primary" id="editMqttBtn" onclick="editMqttConfig()">
+                            <i class="bi bi-pencil-fill"></i> Edit
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div id="mqttConfigContainer">
@@ -92,39 +97,6 @@
                             <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
                             <p class="text-secondary mt-3">Loading settings...</p>
                         </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- HA Card Generator -->
-            <div class="card mt-4">
-                <div class="card-header">
-                    <i class="bi bi-code-square"></i>
-                    Home Assistant Card Generator
-                </div>
-                <div class="card-body">
-                    <p class="small text-secondary">
-                        Generate Lovelace YAML for a ranked fuel price card. Requires 
-                        <a href="https://github.com/piitaya/lovelace-mushroom" target="_blank">Mushroom Cards</a>, 
-                        <a href="https://github.com/thomasloven/lovelace-auto-entities" target="_blank">Auto Entities</a>, and
-                        <a href="https://github.com/thomasloven/lovelace-card-mod" target="_blank">Card Mod</a>.
-                    </p>
-                    <div class="input-group mb-3">
-                        <select class="form-select" id="haFuelType">
-                            <option value="P98" selected>P98</option>
-                            <option value="P95">P95</option>
-                            <option value="U91">U91</option>
-                            <option value="E10">E10</option>
-                            <option value="DL">DL</option>
-                            <option value="LPG">LPG</option>
-                        </select>
-                        <button class="btn btn-primary" type="button" onclick="generateHACard()">Generate YAML</button>
-                    </div>
-                    <div id="haCardResult" style="display: none;">
-                        <textarea class="form-control font-monospace small" id="haCardOutput" rows="10" readonly style="background-color: #0f172a; color: #f8f9fa; border: 1px solid #334155;"></textarea>
-                        <button class="btn btn-outline-secondary btn-sm mt-2 w-100" onclick="copyHACard()">
-                            <i class="bi bi-clipboard"></i> Copy to Clipboard
-                        </button>
                     </div>
                 </div>
             </div>
@@ -177,15 +149,82 @@
             </div>
         </div>
     </div>
+
+    <!-- HA Card Generator Modal -->
+    <div class="modal fade" id="haCardModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-code-square me-2"></i>
+                        Generate Home Assistant Card
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="small text-secondary mb-3">
+                        Generate Lovelace YAML for a ranked fuel price card. Requires 
+                        <a href="https://github.com/piitaya/lovelace-mushroom" target="_blank">Mushroom Cards</a>, 
+                        <a href="https://github.com/thomasloven/lovelace-auto-entities" target="_blank">Auto Entities</a>, and
+                        <a href="https://github.com/thomasloven/lovelace-card-mod" target="_blank">Card Mod</a>.
+                    </p>
+                    
+                    <div class="row g-2 align-items-center mb-3">
+                        <div class="col-auto">
+                            <label for="haFuelType" class="col-form-label">Fuel Type:</label>
+                        </div>
+                        <div class="col">
+                            <select class="form-select" id="haFuelType">
+                                <option value="P98" selected>P98</option>
+                                <option value="P95">P95</option>
+                                <option value="U91">U91</option>
+                                <option value="E10">E10</option>
+                                <option value="DL">DL</option>
+                                <option value="PDL">PDL</option>
+                                <option value="LPG">LPG</option>
+                            </select>
+                        </div>
+                        <div class="col-auto">
+                            <button class="btn btn-primary" type="button" id="btnGenerateYaml" onclick="generateHACard()">
+                                <i class="bi bi-magic"></i> Generate
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="haCardResult" style="display: none;">
+                        <label class="form-label text-secondary small">Generated YAML</label>
+                        <div class="position-relative">
+                            <textarea class="form-control font-monospace small mb-2" id="haCardOutput" rows="12" readonly 
+                                      style="background-color: #0f172a; color: #f8f9fa; border: 1px solid #334155; font-size: 0.8rem;"></textarea>
+                            <button class="btn btn-sm btn-outline-light position-absolute top-0 end-0 m-2" onclick="copyHACard()" title="Copy to Clipboard">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
+                        </div>
+                        <div class="d-grid">
+                            <button class="btn btn-outline-primary" onclick="copyHACard()">
+                                <i class="bi bi-clipboard me-2"></i> Copy to Clipboard
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
     let currentConfig = null;
+    let haCardModal = null;
     
     document.addEventListener('DOMContentLoaded', function() {
         loadConfig();
+        haCardModal = new bootstrap.Modal(document.getElementById('haCardModal'));
     });
+
+    function openHAGeneratorModal() {
+        haCardModal.show();
+    }
     
     async function loadConfig() {
         try {
@@ -578,8 +617,15 @@
     }
 
     async function generateHACard() {
+        console.log('Generate HA Card clicked');
         const fuelType = document.getElementById('haFuelType').value;
-        const btn = document.querySelector('button[onclick="generateHACard()"]');
+        const btn = document.getElementById('btnGenerateYaml');
+        
+        if (!btn) {
+            console.error('Generate button not found');
+            return;
+        }
+
         const originalText = btn.innerHTML;
         
         try {

@@ -9,6 +9,7 @@ import secrets
 import shutil
 import subprocess
 import zipfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -56,6 +57,13 @@ def init_app(config_obj: Config):
     global config, fetcher
     config = config_obj
     fetcher = FuelDataFetcher()
+
+    # Set timezone for the process
+    if config.timezone:
+        os.environ['TZ'] = config.timezone
+        if hasattr(time, 'tzset'):
+            time.tzset()
+        _LOGGER.info("Web app timezone set to %s", config.timezone)
 
     # Configure secret key from data_dir
     secret_key = os.environ.get('FLASK_SECRET_KEY')
@@ -370,7 +378,10 @@ def get_current_prices():
             'trends': trends
         })
     
-    return jsonify({'prices': result})
+    return jsonify({
+        'prices': result,
+        'fetched_at': datetime.now().isoformat()
+    })
 
 
 @app.route('/api/prices/history', methods=['GET'])
@@ -588,64 +599,72 @@ def ha_slugify(text):
 @app.route('/api/ha/generate-card', methods=['POST'])
 def generate_ha_card():
     """Generate Home Assistant Lovelace card configuration."""
-    if not config:
-        return jsonify({'error': 'Configuration not loaded'}), 500
-        
-    data = request.get_json()
-    fuel_type = data.get('fuel_type', 'P98')
-    
-    # Get all stations that support this fuel type
-    stations_list = config.stations
-    if config.db:
-        try:
-            db_stations = config.db.get_stations()
-            if db_stations is not None:
-                stations_list = db_stations
-        except Exception as e:
-            _LOGGER.error("Failed to fetch stations from DB: %s", e)
+    try:
+        if not config:
+            _LOGGER.error("Configuration not loaded in generate_ha_card")
+            return jsonify({'error': 'Configuration not loaded'}), 500
             
-    # Try to fetch station details to get names
-    station_names = {}
-    if fetcher:
-        try:
-            station_data = fetcher.fetch_station_price_data()
-            if station_data and station_data.stations:
-                for s in station_data.stations.values():
-                    station_names[s.code] = s.name
-        except Exception as e:
-            _LOGGER.warning("Failed to fetch station names: %s", e)
+        data = request.get_json()
+        if not data:
+             _LOGGER.error("No JSON data received in generate_ha_card")
+             return jsonify({'error': 'Invalid request'}), 400
 
-    # Build list of entities for this fuel type
-    entities = []
-    for station in stations_list:
-        if fuel_type in station['fuel_types']:
-            sid = station['station_id']
-            name = station_names.get(sid, f"Station {sid}")
-            
-            # Construct entity ID based on HA discovery logic
-            # "fuelapp/sensor/{station_id}/{fuel_type}/state"
-            # Discovery name: "{fuel_type} Price"
-            # Device name: "{Station Name}"
-            # HA defaults to: sensor.{device_name}_{entity_name}
-            
-            device_slug = ha_slugify(name)
-            fuel_slug = ha_slugify(fuel_type)
-            entity_id = f"sensor.{device_slug}_{fuel_slug}_price"
-            
-            entities.append(entity_id)
-
-    # If no entities found, return error
-    if not entities:
-        return jsonify({'error': f'No stations found with fuel type {fuel_type}'}), 404
+        fuel_type = data.get('fuel_type', 'P98')
+        _LOGGER.info("Generating HA card for fuel type: %s", fuel_type)
         
-    # Generate the YAML content
-    fuel_slug = ha_slugify(fuel_type)
-    
-    # Create the prices list string for the template
-    # states('sensor.coles_express_bowral_p98') | float(0),
-    prices_list_str = ",\n                ".join([f"states('{e}') | float(0)" for e in entities])
-    
-    yaml_content = f"""type: custom:vertical-stack-in-card
+        # Get all stations that support this fuel type
+        stations_list = config.stations
+        if config.db:
+            try:
+                db_stations = config.db.get_stations()
+                if db_stations is not None:
+                    stations_list = db_stations
+            except Exception as e:
+                _LOGGER.error("Failed to fetch stations from DB: %s", e)
+        
+        _LOGGER.info("Found %d configured stations", len(stations_list))
+
+        # Try to fetch station details to get names
+        station_names = {}
+        if fetcher:
+            try:
+                _LOGGER.info("Fetching station data for names...")
+                station_data = fetcher.fetch_station_price_data()
+                if station_data and station_data.stations:
+                    for s in station_data.stations.values():
+                        station_names[s.code] = s.name
+                    _LOGGER.info("Mapped names for %d stations", len(station_names))
+                else:
+                    _LOGGER.warning("No station data returned from fetcher")
+            except Exception as e:
+                _LOGGER.warning("Failed to fetch station names: %s", e)
+
+        # Build list of entities for this fuel type
+        entities = []
+        for station in stations_list:
+            if fuel_type in station['fuel_types']:
+                sid = station['station_id']
+                name = station_names.get(sid, f"Station {sid}")
+                
+                device_slug = ha_slugify(name)
+                fuel_slug = ha_slugify(fuel_type)
+                entity_id = f"sensor.{device_slug}_{fuel_slug}_price"
+                
+                entities.append(entity_id)
+
+        _LOGGER.info("Generated %d entities", len(entities))
+
+        # If no entities found, return error
+        if not entities:
+            return jsonify({'error': f'No stations found with fuel type {fuel_type}'}), 404
+            
+        # Generate the YAML content
+        fuel_slug = ha_slugify(fuel_type)
+        
+        # Create the prices list string for the template
+        prices_list_str = ",\n                ".join([f"states('{e}') | float(0)" for e in entities])
+        
+        yaml_content = f"""type: custom:vertical-stack-in-card
 cards:
   - type: custom:mushroom-title-card
     title: ⛽ {fuel_type} Fuel Prices
@@ -697,8 +716,12 @@ cards:
               {{% endif %}}
     exclude: []
     show_empty: true"""
-    
-    return jsonify({'yaml': yaml_content})
+        
+        return jsonify({'yaml': yaml_content})
+        
+    except Exception as e:
+        _LOGGER.exception("Unexpected error in generate_ha_card")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/backup', methods=['POST'])

@@ -11,7 +11,29 @@
             </h1>
             <p class="text-secondary mb-0">Current fuel prices and trends</p>
         </div>
-        <div class="col-auto">
+        <div class="col-auto d-flex align-items-center gap-2">
+            <div class="btn-group">
+                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-list-ul"></i> <span id="groupLabel">Group: Station</span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="setGrouping('station')">Station</a></li>
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="setGrouping('fuel_type')">Fuel Type</a></li>
+                </ul>
+            </div>
+            
+            <div class="btn-group">
+                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-sort-alpha-down"></i> <span id="sortLabel">Sort: Name</span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="setSorting('name')">Name</a></li>
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="setSorting('price_asc')">Price (Low to High)</a></li>
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="setSorting('price_desc')">Price (High to Low)</a></li>
+                </ul>
+            </div>
+
+            <span id="lastUpdated" class="text-secondary mx-2 small d-none d-md-inline"></span>
             <button class="btn btn-primary" onclick="refreshPrices()">
                 <i class="bi bi-arrow-clockwise"></i>
                 Refresh
@@ -127,6 +149,10 @@
     let priceChart = null;
     let stationsData = [];
     
+    // View State
+    let currentGrouping = 'station'; // 'station' or 'fuel_type'
+    let currentSorting = 'name';     // 'name', 'price_asc', 'price_desc'
+    
     // Modal related variables
     let modalChart = null;
     let currentModalStationId = null;
@@ -151,6 +177,22 @@
         priceHistoryModal = new bootstrap.Modal(document.getElementById('priceHistoryModal'));
         stationPriceHistoryModal = new bootstrap.Modal(document.getElementById('stationPriceHistoryModal'));
     });
+
+    function setGrouping(grouping) {
+        currentGrouping = grouping;
+        const label = grouping === 'station' ? 'Station' : 'Fuel Type';
+        document.getElementById('groupLabel').textContent = `Group: ${label}`;
+        displayPrices(stationsData);
+    }
+
+    function setSorting(sorting) {
+        currentSorting = sorting;
+        let label = 'Name';
+        if (sorting === 'price_asc') label = 'Price (Low to High)';
+        if (sorting === 'price_desc') label = 'Price (High to Low)';
+        document.getElementById('sortLabel').textContent = `Sort: ${label}`;
+        displayPrices(stationsData);
+    }
 
     function openStationHistoryModal(stationId, stationName) {
         currentStationModalId = stationId;
@@ -372,6 +414,12 @@
             stationsData = data.prices;
             displayPrices(data.prices);
             populateChartFilters(data.prices);
+            
+            if (data.fetched_at) {
+                const date = new Date(data.fetched_at);
+                const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                document.getElementById('lastUpdated').textContent = `Last check: ${timeStr}`;
+            }
         } catch (error) {
             console.error('Error loading prices:', error);
             document.getElementById('pricesContainer').innerHTML = `
@@ -383,6 +431,42 @@
                 </div>
             `;
         }
+    }
+
+    function getTrendIcon(trend) {
+        if (trend === 'up') {
+            return '<i class="bi bi-caret-up-fill text-danger ms-1"></i>';
+        } else if (trend === 'down') {
+            return '<i class="bi bi-caret-down-fill text-success ms-1"></i>';
+        } else if (trend === 'stable') {
+            return '<i class="bi bi-dash-lg text-secondary ms-1"></i>';
+        }
+        return '';
+    }
+
+    function getLastUpdatedHtml(lastUpdatedISO) {
+        if (!lastUpdatedISO) return '';
+        try {
+            const date = new Date(lastUpdatedISO);
+            if (!isNaN(date.getTime())) {
+                if (window.dateFns) {
+                    const distance = dateFns.formatDistanceToNow(date, { addSuffix: true });
+                    return `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${distance}</div>`;
+                } else {
+                    const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                    return `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${dateStr}</div>`;
+                }
+            }
+        } catch (e) {
+            console.error('Date parsing error', e);
+        }
+        return '';
+    }
+
+    function getMinPrice(station) {
+        const prices = Object.values(station.prices);
+        if (prices.length === 0) return 999999;
+        return Math.min(...prices);
     }
     
     function displayPrices(prices) {
@@ -402,87 +486,122 @@
         
         let html = '';
         
-        for (const station of prices) {
-            html += `
-                <div class="col-12 mb-4">
-                    <div class="card">
-                        <div class="card-header">
-                            <div class="station-name">
-                                <a href="javascript:void(0)" class="text-decoration-none text-white" 
-                                   onclick="openStationHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}')">
-                                    ${escapeHtml(station.station_name)}
-                                </a>
-                            </div>
-                            <div class="station-address">${escapeHtml(station.station_address)}</div>
-                        </div>
-                        <div class="card-body">
-                            <div class="row g-3">
-            `;
+        if (currentGrouping === 'station') {
+            // Clone and Sort by Station
+            let displayData = [...prices];
             
-            const fuelTypes = Object.keys(station.prices);
-            if (fuelTypes.length === 0) {
+            if (currentSorting === 'name') {
+                displayData.sort((a, b) => a.station_name.localeCompare(b.station_name));
+            } else if (currentSorting === 'price_asc') {
+                displayData.sort((a, b) => getMinPrice(a) - getMinPrice(b));
+            } else if (currentSorting === 'price_desc') {
+                displayData.sort((a, b) => getMinPrice(b) - getMinPrice(a));
+            }
+
+            for (const station of displayData) {
                 html += `
-                    <div class="col-12">
-                        <p class="text-secondary mb-0">No prices available</p>
+                    <div class="col-12 mb-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="station-name">
+                                    <a href="javascript:void(0)" class="text-decoration-none text-white" 
+                                       onclick="openStationHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}')">
+                                        ${escapeHtml(station.station_name)}
+                                    </a>
+                                </div>
+                                <div class="station-address">${escapeHtml(station.station_address)}</div>
+                            </div>
+                            <div class="card-body">
+                                <div class="row g-3">
+                `;
+                
+                const fuelTypes = Object.keys(station.prices);
+                if (fuelTypes.length === 0) {
+                    html += `
+                        <div class="col-12">
+                            <p class="text-secondary mb-0">No prices available</p>
+                        </div>
+                    `;
+                } else {
+                    for (const fuelType in station.prices) {
+                        const price = station.prices[fuelType];
+                        const priceInCents = price.toFixed(1);
+                        const trend = station.trends ? station.trends[fuelType] : 'unknown';
+                        const lastUpdated = station.last_updated ? station.last_updated[fuelType] : null;
+
+                        html += `
+                            <div class="col-6 col-sm-4 col-md flex-grow-1" style="min-width: 180px;">
+                                <div class="price-card h-100" style="cursor: pointer; transition: transform 0.2s;" 
+                                     onclick="openPriceHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}', '${fuelType}')"
+                                     onmouseover="this.style.transform='scale(1.05)'" 
+                                     onmouseout="this.style.transform='scale(1)'">
+                                    <div class="price-label">${escapeHtml(fuelType)}</div>
+                                    <div class="price-value">${priceInCents}¢${getTrendIcon(trend)}</div>
+                                    ${getLastUpdatedHtml(lastUpdated)}
+                                </div>
+                            </div>
+                        `;
+                    }
+                }
+                
+                html += `
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 `;
-            } else {
-                for (const fuelType in station.prices) {
-                    const price = station.prices[fuelType];
-                    const priceInCents = price.toFixed(1);
-                    const trend = station.trends ? station.trends[fuelType] : 'unknown';
-                    
-                    let trendIcon = '';
-                    if (trend === 'up') {
-                        trendIcon = '<i class="bi bi-caret-up-fill text-danger ms-1"></i>';
-                    } else if (trend === 'down') {
-                        trendIcon = '<i class="bi bi-caret-down-fill text-success ms-1"></i>';
-                    } else if (trend === 'stable') {
-                        trendIcon = '<i class="bi bi-dash-lg text-secondary ms-1"></i>';
-                    }
+            }
 
-                    const lastUpdatedISO = station.last_updated ? station.last_updated[fuelType] : null;
-                    let lastUpdatedStr = '';
-                    if (lastUpdatedISO) {
-                        try {
-                            const date = new Date(lastUpdatedISO);
-                            if (!isNaN(date.getTime())) {
-                                if (window.dateFns) {
-                                    const distance = dateFns.formatDistanceToNow(date, { addSuffix: true });
-                                    lastUpdatedStr = `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${distance}</div>`;
-                                } else {
-                                    console.warn('dateFns not found, falling back to simple string');
-                                    // Fallback if date-fns not loaded
-                                    const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                                    lastUpdatedStr = `<div class="text-secondary small mt-1" style="font-size: 0.65rem;">Updated ${dateStr}</div>`;
-                                }
-                            }
-                        } catch (e) {
-                            console.error('Date parsing error', e);
-                        }
-                    }
+        } else if (currentGrouping === 'fuel_type') {
+            // Group by Fuel Type
+            const fuelGroups = {};
+            prices.forEach(station => {
+                 Object.keys(station.prices).forEach(ft => {
+                     if (!fuelGroups[ft]) fuelGroups[ft] = [];
+                     fuelGroups[ft].push({
+                         station_id: station.station_id,
+                         station_name: station.station_name,
+                         station_address: station.station_address,
+                         price: station.prices[ft],
+                         trend: station.trends ? station.trends[ft] : 'unknown',
+                         last_updated: station.last_updated ? station.last_updated[ft] : null
+                     });
+                 });
+            });
+            
+            const sortedFuelTypes = Object.keys(fuelGroups).sort();
+            
+            for (const ft of sortedFuelTypes) {
+                html += `<div class="col-12 mt-4 mb-2"><h3 class="h5 border-bottom pb-2" style="border-color: var(--border-color) !important;">${ft}</h3></div>`;
+                
+                let groupData = fuelGroups[ft];
+                if (currentSorting === 'name') {
+                    groupData.sort((a, b) => a.station_name.localeCompare(b.station_name));
+                } else if (currentSorting === 'price_asc') {
+                    groupData.sort((a, b) => a.price - b.price);
+                } else if (currentSorting === 'price_desc') {
+                    groupData.sort((a, b) => b.price - a.price);
+                }
 
+                html += '<div class="row g-3">';
+                for (const item of groupData) {
                     html += `
-                        <div class="col-md-3 col-sm-4 col-6">
-                            <div class="price-card h-100" style="cursor: pointer; transition: transform 0.2s;" 
-                                 onclick="openPriceHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}', '${fuelType}')"
-                                 onmouseover="this.style.transform='scale(1.05)'" 
-                                 onmouseout="this.style.transform='scale(1)'">
-                                <div class="price-label">${escapeHtml(fuelType)}</div>
-                                <div class="price-value">${priceInCents}¢${trendIcon}</div>
-                                ${lastUpdatedStr}
+                        <div class="col-6 col-md-4 col-lg-3">
+                            <div class="price-card h-100" style="cursor: pointer;" 
+                                 onclick="openPriceHistoryModal('${item.station_id}', '${escapeHtml(item.station_name).replace(/'/g, "\\'")}', '${ft}')">
+                                <h6 class="text-white mb-1 text-truncate" title="${escapeHtml(item.station_name)}">${escapeHtml(item.station_name)}</h6>
+                                <p class="small text-secondary mb-2 text-truncate">${escapeHtml(item.station_address)}</p>
+                                <div class="price-value" style="font-size: 1.5rem;">
+                                    ${item.price.toFixed(1)}¢
+                                    ${getTrendIcon(item.trend)}
+                                </div>
+                                ${getLastUpdatedHtml(item.last_updated)}
                             </div>
                         </div>
                     `;
                 }
+                html += '</div>';
             }
-            
-            html += `
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
         }
         
         container.innerHTML = html;
