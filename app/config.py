@@ -330,6 +330,19 @@ class Config:
         self.log_level: str = DEFAULT_LOG_LEVEL
         
         self.db: Optional[ConfigDatabase] = None
+        self.version: str = self._load_version()
+
+    def _load_version(self) -> str:
+        """Load version from VERSION.txt."""
+        try:
+            version_file = Path(__file__).parent.parent / "VERSION.txt"
+            if version_file.exists():
+                with open(version_file, "r") as f:
+                    return f.read().strip()
+            return "unknown"
+        except Exception as exc:
+            _LOGGER.error("Failed to load version: %s", exc)
+            return "unknown"
 
     def load_from_file(self, config_path: str) -> bool:
         """

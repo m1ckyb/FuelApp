@@ -110,7 +110,7 @@
                 <div class="card-body">
                     <div class="mb-3">
                         <span class="config-label">Application</span>
-                        <div class="config-value">NSW Fuel Station Monitor</div>
+                        <div class="config-value">NSW Fuel Station Monitor v<span id="appVersion">0.0.0</span></div>
                     </div>
                     <div class="mb-3">
                         <span class="config-label">Data Source</span>
@@ -239,6 +239,11 @@
             displayConfig(data);
             displayMqttConfig(data);
             displayAppSettings(data);
+            
+            // Set version info
+            if (data.version) {
+                document.getElementById('appVersion').textContent = data.version;
+            }
         } catch (error) {
             console.error('Error loading configuration:', error);
             document.getElementById('configContainer').innerHTML = `

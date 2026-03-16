@@ -483,7 +483,8 @@ def get_config():
         'poll_interval': config.poll_interval,
         'cron_schedule': config.cron_schedule,
         'timezone': config.timezone,
-        'log_level': config.log_level
+        'log_level': config.log_level,
+        'version': config.version
     })
 
 
