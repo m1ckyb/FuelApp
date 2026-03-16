@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2026-03-17
+### Added
+- Dashboard: Added sorting and grouping options. Users can now group prices by Station or Fuel Type and sort by Name or Price.
+- Web App: Added timezone support for the web process, ensuring logs and timestamps match the configured timezone.
+- HA Generator: Improved Home Assistant Card Generator with a cleaner modal-based interface and added 'PDL' fuel type support.
+- Dashboard: Improved 'Last Updated' display with real-time relative time (e.g., "5 minutes ago") when the date-fns library is available.
+- UI: Refined dashboard aesthetics by reducing padding and font sizes on price cards for better information density.
+
+### Changed
+- Dashboard: UI now fetches and displays a "Fetched At" timestamp from the API to confirm when the last check occurred.
+- Logging: Enhanced backend logging for the HA card generation process to aid in troubleshooting.
+
 ## [0.0.4] - 2026-01-02
 ### Fixed
 - Settings: Added missing "PDL" fuel type to the dropdown in the Home Assistant Card Generator.
