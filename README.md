@@ -2,6 +2,8 @@
 
 A standalone Python application that monitors NSW fuel station prices and stores historical data in InfluxDB. This application is based on the [Home Assistant NSW Fuel Station integration](https://github.com/home-assistant/core/tree/dev/homeassistant/components/nsw_fuel_station).
 
+**Note: This project was created with the assistance of AI. Use with caution.**
+
 ## Features
 
 - 📊 Fetches real-time fuel prices from NSW FuelCheck API
