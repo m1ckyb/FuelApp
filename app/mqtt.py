@@ -73,7 +73,8 @@ class MQTTClient:
         _LOGGER.info("Disconnected from MQTT broker (rc=%d)", rc)
         self.connected = False
 
-    def publish_discovery(self, station_id: int, station_name: str, fuel_types: list[str]):
+    def publish_discovery(self, station_id: int, station_name: str, fuel_types: list[str], 
+                          au_state: str = "NSW", latitude: float = None, longitude: float = None):
         """
         Publish Home Assistant discovery messages for a station.
         
@@ -81,14 +82,20 @@ class MQTTClient:
             station_id: Station ID
             station_name: Station Name
             fuel_types: List of fuel types available at this station
+            au_state: Australian state (NSW or TAS)
+            latitude: Latitude coordinate
+            longitude: Longitude coordinate
         """
         if not self.client or not self.connected:
             return
+
+        manufacturer = "NSW FuelCheck" if au_state == "NSW" else "TAS FuelCheck"
 
         for fuel_type in fuel_types:
             unique_id = f"fuelapp_{station_id}_{fuel_type}"
             discovery_topic = f"{self.config.mqtt_discovery_prefix}/sensor/fuelapp/{unique_id}/config"
             state_topic = f"fuelapp/sensor/{station_id}/{fuel_type}/state"
+            attr_topic = f"fuelapp/sensor/{station_id}/{fuel_type}/attributes"
             
             # Sanitize names for HA
             safe_name = station_name.replace('"', '').replace("'", "")
@@ -97,15 +104,16 @@ class MQTTClient:
                 "name": f"{fuel_type} Price",
                 "unique_id": unique_id,
                 "state_topic": state_topic,
+                "json_attributes_topic": attr_topic,
                 "unit_of_measurement": "¢",
                 "device_class": "monetary",
                 "icon": "mdi:gas-station",
                 "device": {
                     "identifiers": [f"fuelapp_{station_id}"],
                     "name": safe_name,
-                    "manufacturer": "NSW FuelCheck",
+                    "manufacturer": manufacturer,
                     "model": "Fuel Station Monitor",
-                    "sw_version": "1.0.0"
+                    "sw_version": self.config.version
                 }
             }
             
@@ -114,6 +122,26 @@ class MQTTClient:
                 _LOGGER.debug("Published discovery for %s", unique_id)
             except Exception as e:
                 _LOGGER.error("Failed to publish discovery: %s", e)
+
+    def publish_attributes(self, station_id: int, fuel_type: str, attributes: Dict[str, Any]):
+        """
+        Publish additional attributes for a station fuel type.
+        
+        Args:
+            station_id: Station ID
+            fuel_type: Fuel Type
+            attributes: Dictionary of attributes (lat, lng, address, etc.)
+        """
+        if not self.client or not self.connected:
+            return
+            
+        attr_topic = f"fuelapp/sensor/{station_id}/{fuel_type}/attributes"
+        
+        try:
+            self.client.publish(attr_topic, json.dumps(attributes), retain=True)
+            _LOGGER.debug("Published attributes for %s/%s", station_id, fuel_type)
+        except Exception as e:
+            _LOGGER.error("Failed to publish attributes: %s", e)
 
     def publish_state(self, station_id: int, fuel_type: str, price: float):
         """

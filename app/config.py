@@ -121,11 +121,33 @@ class ConfigDatabase:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS stations (
                 station_id INTEGER PRIMARY KEY,
+                au_state TEXT DEFAULT 'NSW',
                 fuel_types TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Create price_alerts table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS price_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id INTEGER NOT NULL,
+                fuel_type TEXT NOT NULL,
+                threshold REAL NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(station_id, fuel_type)
+            )
+        """)
+        
+        # Add au_state column if it doesn't exist (for migration)
+        try:
+            cursor.execute("ALTER TABLE stations ADD COLUMN au_state TEXT DEFAULT 'NSW'")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
         
         # Check if schema exists
         cursor.execute("SELECT version FROM schema_version WHERE version = ?", (SCHEMA_VERSION,))
@@ -203,22 +225,24 @@ class ConfigDatabase:
             return []
         
         cursor = self.conn.cursor()
-        cursor.execute("SELECT station_id, fuel_types FROM stations")
+        cursor.execute("SELECT station_id, au_state, fuel_types FROM stations")
         
         stations = []
         for row in cursor.fetchall():
             stations.append({
                 'station_id': row['station_id'],
+                'au_state': row['au_state'] or 'NSW',
                 'fuel_types': json.loads(row['fuel_types'])
             })
         return stations
 
-    def add_station(self, station_id: int, fuel_types: List[str]) -> bool:
+    def add_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW') -> bool:
         """Add a new station.
         
         Args:
             station_id: Station ID
             fuel_types: List of fuel types
+            au_state: Australian state (NSW or TAS)
             
         Returns:
             True if successful, False otherwise
@@ -229,9 +253,9 @@ class ConfigDatabase:
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT INTO stations (station_id, fuel_types, created_at, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (station_id, json.dumps(fuel_types)))
+                INSERT INTO stations (station_id, au_state, fuel_types, created_at, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (station_id, au_state, json.dumps(fuel_types)))
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
@@ -241,12 +265,13 @@ class ConfigDatabase:
             _LOGGER.error("Failed to add station %d: %s", station_id, exc)
             return False
 
-    def update_station(self, station_id: int, fuel_types: List[str]) -> bool:
-        """Update a station's fuel types.
+    def update_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW') -> bool:
+        """Update a station's fuel types and state.
         
         Args:
             station_id: Station ID
             fuel_types: List of fuel types
+            au_state: Australian state
             
         Returns:
             True if successful, False otherwise
@@ -258,9 +283,9 @@ class ConfigDatabase:
             cursor = self.conn.cursor()
             cursor.execute("""
                 UPDATE stations
-                SET fuel_types = ?, updated_at = CURRENT_TIMESTAMP
+                SET fuel_types = ?, au_state = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE station_id = ?
-            """, (json.dumps(fuel_types), station_id))
+            """, (json.dumps(fuel_types), au_state, station_id))
             self.conn.commit()
             return cursor.rowcount > 0
         except Exception as exc:
@@ -286,6 +311,78 @@ class ConfigDatabase:
             return cursor.rowcount > 0
         except Exception as exc:
             _LOGGER.error("Failed to delete station %d: %s", station_id, exc)
+            return False
+
+    def get_alerts(self) -> List[Dict[str, Any]]:
+        """Get all configured price alerts."""
+        if not self.conn:
+            return []
+        
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, station_id, fuel_type, threshold, enabled FROM price_alerts")
+        
+        alerts = []
+        for row in cursor.fetchall():
+            alerts.append({
+                'id': row['id'],
+                'station_id': row['station_id'],
+                'fuel_type': row['fuel_type'],
+                'threshold': row['threshold'],
+                'enabled': bool(row['enabled'])
+            })
+        return alerts
+
+    def add_alert(self, station_id: int, fuel_type: str, threshold: float) -> bool:
+        """Add a new price alert."""
+        if not self.conn:
+            return False
+        
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT INTO price_alerts (station_id, fuel_type, threshold, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(station_id, fuel_type) DO UPDATE SET
+                    threshold = excluded.threshold,
+                    enabled = 1,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (station_id, fuel_type, threshold))
+            self.conn.commit()
+            return True
+        except Exception as exc:
+            _LOGGER.error("Failed to add alert for %d/%s: %s", station_id, fuel_type, exc)
+            return False
+
+    def delete_alert(self, alert_id: int) -> bool:
+        """Delete a price alert."""
+        if not self.conn:
+            return False
+        
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM price_alerts WHERE id = ?", (alert_id,))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as exc:
+            _LOGGER.error("Failed to delete alert %d: %s", alert_id, exc)
+            return False
+
+    def toggle_alert(self, alert_id: int, enabled: bool) -> bool:
+        """Toggle a price alert enabled state."""
+        if not self.conn:
+            return False
+        
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE price_alerts
+                SET enabled = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (1 if enabled else 0, alert_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as exc:
+            _LOGGER.error("Failed to toggle alert %d: %s", alert_id, exc)
             return False
 
     def close(self):
@@ -317,6 +414,12 @@ class Config:
         self.influxdb_org: str = ""
         self.influxdb_bucket: str = "fuel_prices"
         
+        self.fuel_api_client_id: str = ""
+        self.fuel_api_client_secret: str = ""
+        
+        self.discord_webhook_url: str = ""
+        self.discord_price_threshold: float = 5.0  # Default 5 cents increase
+        
         self.mqtt_broker: str = ""
         self.mqtt_port: int = DEFAULT_MQTT_PORT
         self.mqtt_user: str = ""
@@ -324,6 +427,7 @@ class Config:
         self.mqtt_discovery_prefix: str = DEFAULT_MQTT_DISCOVERY_PREFIX
         
         self.stations: list[dict] = []
+        self.alerts: list[dict] = []
         self.poll_interval: int = DEFAULT_POLL_INTERVAL
         self.cron_schedule: str = ""
         self.timezone: str = DEFAULT_TIMEZONE
@@ -378,6 +482,20 @@ class Config:
                 self.influxdb_org = influx_config.get('org', self.influxdb_org)
                 self.influxdb_bucket = influx_config.get('bucket', self.influxdb_bucket)
             
+            # Load Fuel API configuration
+            if 'fuel_api' in config_data:
+                api_config = config_data['fuel_api']
+                self.fuel_api_client_id = api_config.get('client_id', self.fuel_api_client_id)
+                self.fuel_api_client_secret = api_config.get('client_secret', self.fuel_api_client_secret)
+            
+            # Load Notification configuration
+            if 'notifications' in config_data:
+                notif_config = config_data['notifications']
+                if 'discord' in notif_config:
+                    discord_config = notif_config['discord']
+                    self.discord_webhook_url = discord_config.get('webhook_url', self.discord_webhook_url)
+                    self.discord_price_threshold = float(discord_config.get('price_threshold', self.discord_price_threshold))
+
             # Load MQTT configuration (optional in YAML)
             if 'mqtt' in config_data:
                 mqtt_config = config_data['mqtt']
@@ -449,6 +567,15 @@ class Config:
             self.influxdb_org = settings.get('influxdb_org', self.influxdb_org)
             self.influxdb_bucket = settings.get('influxdb_bucket', self.influxdb_bucket)
             
+            self.fuel_api_client_id = settings.get('fuel_api_client_id', self.fuel_api_client_id)
+            self.fuel_api_client_secret = settings.get('fuel_api_client_secret', self.fuel_api_client_secret)
+            
+            self.discord_webhook_url = settings.get('discord_webhook_url', self.discord_webhook_url)
+            try:
+                self.discord_price_threshold = float(settings.get('discord_price_threshold', self.discord_price_threshold))
+            except (ValueError, TypeError):
+                pass
+            
             # Load MQTT settings
             self.mqtt_broker = settings.get('mqtt_broker', self.mqtt_broker)
             try:
@@ -469,8 +596,9 @@ class Config:
             self.timezone = settings.get('timezone', self.timezone)
             self.log_level = settings.get('log_level', self.log_level)
             
-            # Load stations
+            # Load stations and alerts
             self.stations = self.db.get_stations()
+            self.alerts = self.db.get_alerts()
             
             _LOGGER.info("Configuration loaded from database")
             return True
@@ -498,6 +626,12 @@ class Config:
             self.db.set_setting('influxdb_org', self.influxdb_org)
             self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
             
+            self.db.set_setting('fuel_api_client_id', self.fuel_api_client_id)
+            self.db.set_setting('fuel_api_client_secret', self.fuel_api_client_secret)
+            
+            self.db.set_setting('discord_webhook_url', self.discord_webhook_url)
+            self.db.set_setting('discord_price_threshold', str(self.discord_price_threshold))
+            
             # Save MQTT settings
             self.db.set_setting('mqtt_broker', self.mqtt_broker)
             self.db.set_setting('mqtt_port', str(self.mqtt_port))
@@ -514,7 +648,8 @@ class Config:
             for station in self.stations:
                 self.db.add_station(
                     station['station_id'],
-                    station['fuel_types']
+                    station['fuel_types'],
+                    station.get('au_state', 'NSW')
                 )
             
             _LOGGER.info("Configuration migrated to database successfully")
@@ -542,6 +677,12 @@ class Config:
             self.db.set_setting('influxdb_token', self.influxdb_token)
             self.db.set_setting('influxdb_org', self.influxdb_org)
             self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
+            
+            self.db.set_setting('fuel_api_client_id', self.fuel_api_client_id)
+            self.db.set_setting('fuel_api_client_secret', self.fuel_api_client_secret)
+            
+            self.db.set_setting('discord_webhook_url', self.discord_webhook_url)
+            self.db.set_setting('discord_price_threshold', str(self.discord_price_threshold))
             
             # Save MQTT settings
             self.db.set_setting('mqtt_broker', self.mqtt_broker)
@@ -575,6 +716,12 @@ class Config:
             self.influxdb_org = os.getenv('INFLUXDB_ORG')
         if os.getenv('INFLUXDB_BUCKET'):
             self.influxdb_bucket = os.getenv('INFLUXDB_BUCKET')
+            
+        # Load Fuel API env vars
+        if os.getenv('FUEL_API_CLIENT_ID'):
+            self.fuel_api_client_id = os.getenv('FUEL_API_CLIENT_ID')
+        if os.getenv('FUEL_API_CLIENT_SECRET'):
+            self.fuel_api_client_secret = os.getenv('FUEL_API_CLIENT_SECRET')
             
         # Load MQTT env vars
         if os.getenv('MQTT_BROKER'):

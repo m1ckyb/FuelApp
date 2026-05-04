@@ -88,7 +88,7 @@ def main():
     
     # Check if dependencies are installed
     try:
-        from nsw_fuel import FuelCheckClient
+        from nsw_tas_fuel import NSWFuelApiClient
         import yaml
         from influxdb_client import InfluxDBClient
     except ImportError as e:

@@ -16,6 +16,7 @@ from croniter import croniter
 from .config import Config, setup_logging
 from .data import FuelDataFetcher, InfluxDBWriter
 from .mqtt import MQTTClient
+from .notifications import DiscordClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +37,10 @@ class FuelApp:
     def __init__(self, config: Config):
         """Initialize the fuel application."""
         self.config = config
-        self.fetcher = FuelDataFetcher()
+        self.fetcher = FuelDataFetcher(
+            client_id=config.fuel_api_client_id,
+            client_secret=config.fuel_api_client_secret
+        )
         self.writer = InfluxDBWriter(
             url=config.influxdb_url,
             token=config.influxdb_token,
@@ -44,6 +48,7 @@ class FuelApp:
             bucket=config.influxdb_bucket
         )
         self.mqtt = MQTTClient(config)
+        self.notifications = DiscordClient(config.discord_webhook_url)
         self.connected = False
         self.last_prices = {}
 
@@ -66,13 +71,17 @@ class FuelApp:
         if self.config.db:
             try:
                 self.config.load_from_database()
+                # Update fetcher credentials and notifications in case they changed in DB
+                self.fetcher.client_id = self.config.fuel_api_client_id
+                self.fetcher.client_secret = self.config.fuel_api_client_secret
+                self.notifications.webhook_url = self.config.discord_webhook_url
             except Exception as e:
                 _LOGGER.error("Failed to reload configuration: %s", e)
 
         _LOGGER.info("Starting fuel price update cycle")
         
-        # Fetch data from NSW FuelCheck API
-        data = self.fetcher.fetch_station_price_data()
+        # Fetch data from NSW/TAS Fuel API
+        data = self.fetcher.fetch_station_price_data(self.config.stations)
         
         if data is None:
             _LOGGER.error("Failed to fetch fuel price data")
@@ -87,9 +96,19 @@ class FuelApp:
 
         # Filter for InfluxDB: Only write if price has changed
         updates_by_station = {}
+        price_alerts_triggered = []
+        
+        # Map alerts for easier lookup: (station_id, fuel_type) -> threshold
+        alert_map = {
+            (a['station_id'], a['fuel_type']): a['threshold']
+            for a in self.config.alerts if a['enabled']
+        }
+
         for station_id in station_ids:
             station_updates = []
             fuel_types = fuel_types_by_station.get(station_id, [])
+            station_info = data.stations.get(station_id)
+            
             for fuel_type in fuel_types:
                 price_obj = data.prices.get((station_id, fuel_type))
                 if price_obj:
@@ -97,15 +116,33 @@ class FuelApp:
                     last_price = self.last_prices.get((station_id, fuel_type))
                     
                     # Check if changed (using epsilon for float)
-                    if last_price is None or abs(current_price - last_price) > 0.001:
+                    if last_price is not None and abs(current_price - last_price) > 0.001:
                         station_updates.append(fuel_type)
-                        # We update cache immediately here, but if write fails we might be out of sync?
-                        # It's better to update cache AFTER successful write, or just assume it works.
-                        # Given the simple architecture, assuming success or re-fetching next time is okay.
-                        # But wait, if we update cache here and write fails, next run we won't try to write again.
-                        # We should update cache only if we are going to write (which we are) 
-                        # and maybe refresh cache from DB if write fails?
-                        # For now, let's update cache here.
+                        
+                        # Check for price increase alerts
+                        increase = current_price - last_price
+                        
+                        # Priority: 
+                        # 1. Explicit alert threshold
+                        # 2. Global threshold (if no explicit alert, webhook is set, and global threshold > 0)
+                        threshold = alert_map.get((station_id, fuel_type))
+                        if threshold is None and self.config.discord_webhook_url:
+                            if self.config.discord_price_threshold > 0:
+                                # If no specific alert, use global threshold as fallback (if enabled)
+                                threshold = self.config.discord_price_threshold
+                        
+                        if threshold is not None and increase >= threshold:
+                            price_alerts_triggered.append({
+                                'station_name': station_info.name if station_info else f"Station {station_id}",
+                                'fuel_type': fuel_type,
+                                'old_price': last_price,
+                                'new_price': current_price,
+                                'increase': increase
+                            })
+                            
+                        self.last_prices[(station_id, fuel_type)] = current_price
+                    elif last_price is None:
+                        # Initial fetch for this station/fuel
                         self.last_prices[(station_id, fuel_type)] = current_price
             
             if station_updates:
@@ -127,6 +164,22 @@ class FuelApp:
                 # But typically InfluxDB write failures are connection issues, so next run might fail too.
         else:
              _LOGGER.info("No price changes detected, skipping InfluxDB write")
+
+        # Send price alerts to Discord
+        if price_alerts_triggered and self.notifications.webhook_url:
+            _LOGGER.info("Triggering %d price alerts to Discord", len(price_alerts_triggered))
+            
+            # Group alerts into a single message
+            lines = ["🚨 **Fuel Price Increase Alert** 🚨", ""]
+            for alert in price_alerts_triggered:
+                lines.append(
+                    f"**{alert['station_name']}** ({alert['fuel_type']}): "
+                    f"`{alert['old_price']:.1f}` ➔ `{alert['new_price']:.1f}` "
+                    f"(**+{alert['increase']:.1f}¢**)"
+                )
+            
+            message = "\n".join(lines)
+            self.notifications.send_notification(message)
             
         # Publish to MQTT (Always publish current state to ensure HA is in sync)
         if self.mqtt and self.mqtt.connected:
@@ -137,13 +190,33 @@ class FuelApp:
                     fuel_types = fuel_types_by_station.get(station_id, [])
                     
                     # Publish Discovery (Idempotent)
-                    self.mqtt.publish_discovery(station_id, station.name, fuel_types)
+                    self.mqtt.publish_discovery(
+                        station_id, 
+                        station.name, 
+                        fuel_types,
+                        station.au_state,
+                        getattr(station, 'latitude', None),
+                        getattr(station, 'longitude', None)
+                    )
                     
-                    # Publish States
+                    # Publish States and Attributes
                     for fuel_type in fuel_types:
                         price_obj = data.prices.get((station_id, fuel_type))
                         if price_obj is not None:
                             self.mqtt.publish_state(station_id, fuel_type, price_obj.price)
+                            
+                            # Publish Attributes
+                            attributes = {
+                                "station_id": station_id,
+                                "station_name": station.name,
+                                "address": station.address,
+                                "brand": station.brand,
+                                "state": station.au_state,
+                                "latitude": getattr(station, 'latitude', None),
+                                "longitude": getattr(station, 'longitude', None),
+                                "last_updated": price_obj.last_updated.isoformat() if hasattr(price_obj, 'last_updated') and price_obj.last_updated else None
+                            }
+                            self.mqtt.publish_attributes(station_id, fuel_type, attributes)
 
     def run_once(self):
         """Run a single update cycle."""

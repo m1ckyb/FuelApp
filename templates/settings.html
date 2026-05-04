@@ -35,6 +35,24 @@
                 </div>
             </div>
 
+            <!-- Fuel API Configuration -->
+            <div class="card mt-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-key-fill"></i> Fuel API Configuration</span>
+                    <button class="btn btn-sm btn-primary" id="editApiBtn" onclick="editApiConfig()">
+                        <i class="bi bi-pencil-fill"></i> Edit
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="apiConfigContainer">
+                        <div class="text-center py-5">
+                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+                            <p class="text-secondary mt-3">Loading configuration...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- InfluxDB Configuration -->
             <div class="card mt-4">
                 <div class="card-header d-flex justify-content-between align-items-center">
@@ -48,6 +66,24 @@
                         <div class="text-center py-5">
                             <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
                             <p class="text-secondary mt-3">Loading configuration...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Discord Notifications -->
+            <div class="card mt-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-discord"></i> Discord Notifications</span>
+                    <button class="btn btn-sm btn-primary" id="editDiscordBtn" onclick="editDiscordConfig()">
+                        <i class="bi bi-pencil-fill"></i> Edit
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="discordConfigContainer">
+                        <div class="text-center py-5">
+                            <div class="loading-spinner" style="width: 3rem; height: 3rem; border-width: 4px;"></div>
+                            <p class="text-secondary mt-3">Loading settings...</p>
                         </div>
                     </div>
                 </div>
@@ -239,6 +275,8 @@
             displayConfig(data);
             displayMqttConfig(data);
             displayAppSettings(data);
+            displayApiConfig(data);
+            displayDiscordConfig(data);
             
             // Set version info
             if (data.version) {
@@ -324,6 +362,225 @@
         `;
         
         container.innerHTML = html;
+    }
+
+    function displayApiConfig(config) {
+        const container = document.getElementById('apiConfigContainer');
+        
+        const html = `
+            <div class="mb-3">
+                <span class="config-label">Client ID</span>
+                <div class="config-value">${config.fuel_api_client_id ? escapeHtml(config.fuel_api_client_id) : '<span class="text-warning small">Not configured</span>'}</div>
+            </div>
+            <div class="mb-3">
+                <span class="config-label">Client Secret</span>
+                <div class="config-value">${config.fuel_api_client_secret ? '••••••••' : '<span class="text-warning small">Not configured</span>'}</div>
+            </div>
+            <p class="small text-secondary mb-0 mt-3">
+                <i class="bi bi-info-circle"></i>
+                Required for the NSW/TAS Fuel API. Register at the official portal to obtain these.
+            </p>
+        `;
+        
+        container.innerHTML = html;
+    }
+    
+    function displayDiscordConfig(config) {
+        const container = document.getElementById('discordConfigContainer');
+        
+        const html = `
+            <div class="mb-3">
+                <span class="config-label">Webhook URL</span>
+                <div class="config-value">${config.discord_webhook_url ? '••••••••' : '<span class="text-secondary small">Not configured</span>'}</div>
+            </div>
+            <div class="mb-3">
+                <span class="config-label">Global Threshold</span>
+                <div class="config-value">${config.discord_price_threshold > 0 ? config.discord_price_threshold + '¢' : '<span class="text-danger small">Disabled (0¢)</span>'}</div>
+            </div>
+            <p class="small text-secondary mb-0 mt-3">
+                <i class="bi bi-info-circle"></i>
+                Notifications are sent when a fuel price increases by at least the threshold. 
+                Configure granular alerts in the <a href="/alerts" class="text-decoration-none">Alerts</a> page.
+            </p>
+        `;
+        
+        container.innerHTML = html;
+    }
+
+    function editDiscordConfig() {
+        const container = document.getElementById('discordConfigContainer');
+        
+        const html = `
+            <form id="discordConfigForm" onsubmit="saveDiscordConfig(event)">
+                <div class="mb-3">
+                    <label for="discord_webhook_url" class="form-label">Webhook URL</label>
+                    <input type="password" class="form-control" id="discord_webhook_url" 
+                           placeholder="Enter new webhook URL or leave unchanged">
+                    <small class="text-secondary">Leave blank to keep current webhook</small>
+                </div>
+                <div class="mb-3">
+                    <label for="discord_price_threshold" class="form-label">Global Threshold (¢)</label>
+                    <input type="number" class="form-control" id="discord_price_threshold" 
+                           value="${currentConfig.discord_price_threshold}" step="0.1" required>
+                    <small class="text-secondary">Default threshold for all monitored stations. Set to <b>0</b> to disable global alerts.</small>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-check-lg"></i> Save
+                    </button>
+                    <button type="button" class="btn btn-info" onclick="testDiscordNotification()">
+                        <i class="bi bi-lightning-fill"></i> Test Notification
+                    </button>
+                    <button type="button" class="btn btn-secondary" onclick="cancelDiscordEdit()">
+                        <i class="bi bi-x-lg"></i> Cancel
+                    </button>
+                </div>
+            </form>
+        `;
+        
+        container.innerHTML = html;
+        document.getElementById('editDiscordBtn').style.display = 'none';
+    }
+
+    function cancelDiscordEdit() {
+        displayDiscordConfig(currentConfig);
+        document.getElementById('editDiscordBtn').style.display = 'block';
+    }
+
+    async function saveDiscordConfig(event) {
+        event.preventDefault();
+        
+        const formData = {
+            discord_webhook_url: document.getElementById('discord_webhook_url').value,
+            discord_price_threshold: parseFloat(document.getElementById('discord_price_threshold').value)
+        };
+        
+        try {
+            const response = await fetch('/api/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to save configuration');
+            }
+            
+            showToast('Discord configuration saved successfully', 'success');
+            await loadConfig();
+            document.getElementById('editDiscordBtn').style.display = 'block';
+        } catch (error) {
+            console.error('Error saving Discord configuration:', error);
+            showToast(error.message, 'error');
+        }
+    }
+
+    async function testDiscordNotification() {
+        const btn = document.querySelector('button[onclick="testDiscordNotification()"]');
+        const originalText = btn.innerHTML;
+        
+        const formData = {
+            discord_webhook_url: document.getElementById('discord_webhook_url').value
+        };
+        
+        try {
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Testing...';
+            btn.disabled = true;
+            
+            const response = await fetch('/api/config/discord/test', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Test failed');
+            }
+            
+            showToast(data.message, 'success');
+        } catch (error) {
+            console.error('Discord Test Error:', error);
+            showToast(error.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    function editApiConfig() {
+        const container = document.getElementById('apiConfigContainer');
+        
+        const html = `
+            <form id="apiConfigForm" onsubmit="saveApiConfig(event)">
+                <div class="mb-3">
+                    <label for="fuel_api_client_id" class="form-label">Client ID</label>
+                    <input type="text" class="form-control" id="fuel_api_client_id" 
+                           value="${escapeHtml(currentConfig.fuel_api_client_id || '')}" required>
+                </div>
+                <div class="mb-3">
+                    <label for="fuel_api_client_secret" class="form-label">Client Secret</label>
+                    <input type="password" class="form-control" id="fuel_api_client_secret" 
+                           placeholder="Enter new secret or leave unchanged">
+                    <small class="text-secondary">Leave blank to keep current secret</small>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-check-lg"></i> Save
+                    </button>
+                    <button type="button" class="btn btn-secondary" onclick="cancelApiEdit()">
+                        <i class="bi bi-x-lg"></i> Cancel
+                    </button>
+                </div>
+            </form>
+        `;
+        
+        container.innerHTML = html;
+        document.getElementById('editApiBtn').style.display = 'none';
+    }
+    
+    function cancelApiEdit() {
+        displayApiConfig(currentConfig);
+        document.getElementById('editApiBtn').style.display = 'block';
+    }
+
+    async function saveApiConfig(event) {
+        event.preventDefault();
+        
+        const formData = {
+            fuel_api_client_id: document.getElementById('fuel_api_client_id').value,
+            fuel_api_client_secret: document.getElementById('fuel_api_client_secret').value
+        };
+        
+        try {
+            const response = await fetch('/api/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to save configuration');
+            }
+            
+            showToast('API configuration saved successfully', 'success');
+            await loadConfig();
+            document.getElementById('editApiBtn').style.display = 'block';
+        } catch (error) {
+            console.error('Error saving API configuration:', error);
+            showToast(error.message, 'error');
+        }
     }
     
     function editInfluxConfig() {

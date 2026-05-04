@@ -1,6 +1,6 @@
-from nsw_fuel import FuelCheckClient
+from nsw_tas_fuel import NSWFuelApiClient
 
-client = FuelCheckClient()
+client = NSWFuelApiClient()
 data = client.get_fuel_prices()
 
 if data.prices:

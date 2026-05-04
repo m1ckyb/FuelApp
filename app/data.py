@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional, Any
 
+import aiohttp
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-from nsw_fuel import FuelCheckClient, FuelCheckError, Station
+from nsw_tas_fuel import NSWFuelApiClient, NSWFuelApiClientError, Station
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,25 +27,101 @@ class StationPriceData:
 class FuelDataFetcher:
     """Fetches fuel price data from NSW FuelCheck API."""
 
-    def __init__(self):
+    def __init__(self, client_id: str = "", client_secret: str = ""):
         """Initialize the fuel data fetcher."""
-        self.client = FuelCheckClient()
+        self.client_id = client_id
+        self.client_secret = client_secret
         _LOGGER.info("FuelDataFetcher initialized")
 
-    def fetch_station_price_data(self) -> Optional[StationPriceData]:
-        """Fetch fuel price and station data."""
+    def fetch_station_price_data(self, config_stations: list[dict] = None) -> Optional[StationPriceData]:
+        """Fetch fuel price and station data.
+        
+        Args:
+            config_stations: List of station configurations from config. 
+                            If None, fetches bulk data for both NSW and TAS.
+        """
+        
+        async def _fetch():
+            async with aiohttp.ClientSession() as session:
+                client = NSWFuelApiClient(
+                    session=session,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret
+                )
+                
+                # Identify which states we have
+                if config_stations is not None:
+                    states = {s.get('au_state', 'NSW') for s in config_stations}
+                else:
+                    states = {'NSW', 'TAS'}
+                
+                stations_map: dict[int, Station] = {}
+                prices_list: list[Any] = []
+                
+                # 1. Fetch reference data to get Station objects for all required states
+                for state in states:
+                    try:
+                        ref_data = await client.get_reference_data(states=[state])
+                        for s in ref_data.stations:
+                            stations_map[s.code] = s
+                    except Exception as e:
+                        _LOGGER.error("Failed to fetch reference data for %s: %s", state, e)
+
+                # 2. Fetch prices
+                # For NSW, we can use the bulk API (default)
+                if 'NSW' in states:
+                    try:
+                        nsw_data = await client.get_fuel_prices()
+                        prices_list.extend(nsw_data.prices)
+                        # Also merge any stations we might have missed
+                        for s in nsw_data.stations:
+                            stations_map[s.code] = s
+                    except Exception as e:
+                        _LOGGER.error("Failed to fetch bulk NSW prices: %s", e)
+                
+                # For other states (like TAS), we fetch per station or bulk if possible.
+                # Currently the library defaults bulk price fetch to NSW only.
+                if 'TAS' in states:
+                    tas_stations = []
+                    if config_stations is not None:
+                        tas_stations = [s for s in config_stations if s.get('au_state') == 'TAS']
+                    else:
+                        # If we want ALL TAS prices, we'd need to fetch them.
+                        # Since we can't bulk fetch TAS prices easily with the current client,
+                        # and lookups are usually for a single ID, we'll try to fetch the 
+                        # specific station if it was in our config, or skip bulk for now.
+                        pass
+                    
+                    if tas_stations:
+                        tasks = [
+                            client.get_fuel_prices_for_station(
+                                str(s['station_id']), 
+                                'TAS'
+                            ) for s in tas_stations
+                        ]
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                        
+                        for i, res in enumerate(results):
+                            if isinstance(res, Exception):
+                                _LOGGER.error(
+                                    "Failed to fetch prices for TAS station %s: %s", 
+                                    tas_stations[i]['station_id'], res
+                                )
+                            else:
+                                prices_list.extend(res)
+                
+                return stations_map, prices_list
+
         try:
-            _LOGGER.info("Fetching fuel price data from NSW FuelCheck API")
-            raw_price_data = self.client.get_fuel_prices()
+            _LOGGER.info("Fetching fuel price data from NSW/TAS Fuel API")
+            stations_map, prices_list = asyncio.run(_fetch())
             
-            # Restructure prices and station details to be indexed by station code
-            # for O(1) lookup
-            # Store the full Price object to retain metadata like last_updated
+            # Restructure prices for O(1) lookup
             station_data = StationPriceData(
-                stations={s.code: s for s in raw_price_data.stations},
+                stations=stations_map,
                 prices={
                     (p.station_code, p.fuel_type): p
-                    for p in raw_price_data.prices
+                    for p in prices_list
                 },
             )
             
@@ -54,8 +132,8 @@ class FuelDataFetcher:
             )
             return station_data
 
-        except FuelCheckError as exc:
-            _LOGGER.error("Failed to fetch NSW Fuel station price data: %s", exc)
+        except NSWFuelApiClientError as exc:
+            _LOGGER.error("Failed to fetch fuel station price data: %s", exc)
             return None
         except Exception as exc:
             _LOGGER.exception("Unexpected error fetching fuel data: %s", exc)

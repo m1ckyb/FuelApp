@@ -56,7 +56,10 @@ def init_app(config_obj: Config):
     """Initialize the Flask app with configuration."""
     global config, fetcher
     config = config_obj
-    fetcher = FuelDataFetcher()
+    fetcher = FuelDataFetcher(
+        client_id=config.fuel_api_client_id,
+        client_secret=config.fuel_api_client_secret
+    )
 
     # Set timezone for the process
     if config.timezone:
@@ -86,6 +89,19 @@ def init_app(config_obj: Config):
     backup_dir.mkdir(parents=True, exist_ok=True)
 
 
+def refresh_config_and_fetcher():
+    """Reload configuration from database and update fetcher credentials."""
+    global config, fetcher
+    if config and config.db:
+        try:
+            config.load_from_database()
+            if fetcher:
+                fetcher.client_id = config.fuel_api_client_id
+                fetcher.client_secret = config.fuel_api_client_secret
+        except Exception as e:
+            _LOGGER.error("Failed to refresh configuration: %s", e)
+    return config, fetcher
+
 
 @app.route('/')
 def index():
@@ -99,6 +115,12 @@ def stations():
     return render_template('stations.html')
 
 
+@app.route('/alerts')
+def alerts_page():
+    """Price alerts management page."""
+    return render_template('alerts.html')
+
+
 @app.route('/settings')
 def settings():
     """Settings page."""
@@ -108,14 +130,19 @@ def settings():
 @app.route('/api/stations/lookup', methods=['GET'])
 def lookup_station():
     """Lookup station details and available fuel types."""
-    if not fetcher:
+    cfg, ftr = refresh_config_and_fetcher()
+    if not ftr:
         return jsonify({'error': 'Fetcher not initialized'}), 500
     
     station_id = request.args.get('station_id', type=int)
     if not station_id:
         return jsonify({'error': 'station_id is required'}), 400
         
-    data = fetcher.fetch_station_price_data()
+    # For lookup, we try to fetch all stations (NSW and TAS) to find the ID
+    data = ftr.fetch_station_price_data([
+        {'station_id': station_id, 'au_state': 'NSW'},
+        {'station_id': station_id, 'au_state': 'TAS'}
+    ])
     if not data:
         return jsonify({'error': 'Failed to fetch data'}), 500
         
@@ -131,6 +158,7 @@ def lookup_station():
             
     return jsonify({
         'station_id': station_id,
+        'au_state': station.au_state,
         'station_name': station.name,
         'available_fuel_types': sorted(available_fuel_types)
     })
@@ -139,35 +167,37 @@ def lookup_station():
 @app.route('/api/stations', methods=['GET'])
 def get_stations():
     """Get all configured stations."""
-    if not config:
+    cfg, ftr = refresh_config_and_fetcher()
+    if not cfg:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
+    # Fetch stations from DB if available to avoid stale data across workers
+    stations_list = cfg.stations
+    if cfg.db:
+        try:
+            db_stations = cfg.db.get_stations()
+            if db_stations is not None:
+                stations_list = db_stations
+        except Exception as e:
+            _LOGGER.error("Failed to fetch stations from DB: %s", e)
+
     # Try to fetch station details to get names
     station_names = {}
-    if fetcher:
+    if ftr:
         try:
-            data = fetcher.fetch_station_price_data()
+            data = ftr.fetch_station_price_data(stations_list)
             if data and data.stations:
                 for s in data.stations.values():
                     station_names[s.code] = s.name
         except Exception as e:
             _LOGGER.warning("Failed to fetch station names: %s", e)
     
-    # Fetch stations from DB if available to avoid stale data across workers
-    stations_list = config.stations
-    if config.db:
-        try:
-            db_stations = config.db.get_stations()
-            if db_stations is not None:
-                stations_list = db_stations
-        except Exception as e:
-            _LOGGER.error("Failed to fetch stations from DB: %s", e)
-
     result = []
     for station in stations_list:
         sid = station['station_id']
         result.append({
             'station_id': sid,
+            'au_state': station.get('au_state', 'NSW'),
             'station_name': station_names.get(sid, f"Station {sid}"),
             'fuel_types': station['fuel_types']
         })
@@ -184,6 +214,7 @@ def add_station():
     data = request.get_json()
     station_id = data.get('station_id')
     fuel_types = data.get('fuel_types', [])
+    au_state = data.get('au_state', 'NSW')
     
     if not station_id:
         return jsonify({'error': 'station_id is required'}), 400
@@ -202,10 +233,11 @@ def add_station():
             return jsonify({'error': 'Station already exists'}), 400
     
     # Add station to database
-    if config.db and config.db.add_station(station_id, fuel_types):
+    if config.db and config.db.add_station(station_id, fuel_types, au_state):
         # Update in-memory config
         new_station = {
             'station_id': station_id,
+            'au_state': au_state,
             'fuel_types': fuel_types
         }
         config.stations.append(new_station)
@@ -247,13 +279,14 @@ def update_station(station_id):
         return jsonify({'error': f'Invalid fuel types: {invalid_types}'}), 400
     
     # Update in database
-    if config.db and config.db.update_station(station_id, fuel_types):
+    if config.db and config.db.update_station(station_id, fuel_types, au_state):
         # Update in-memory config
         for station in config.stations:
             if station['station_id'] == station_id:
                 station['fuel_types'] = fuel_types
+                station['au_state'] = au_state
                 return jsonify({'message': 'Station updated successfully', 'station': station}), 200
-        return jsonify({'error': 'Station not found'}), 404
+        return jsonify({'error': 'Station not found in memory'}), 404
     else:
         return jsonify({'error': 'Failed to update station'}), 500
 
@@ -261,23 +294,24 @@ def update_station(station_id):
 @app.route('/api/prices/current', methods=['GET'])
 def get_current_prices():
     """Get current fuel prices from the API."""
-    if not fetcher:
+    cfg, ftr = refresh_config_and_fetcher()
+    if not ftr:
         return jsonify({'error': 'Fetcher not initialized'}), 500
     
-    data = fetcher.fetch_station_price_data()
-    if not data:
-        return jsonify({'error': 'Failed to fetch fuel prices'}), 500
-    
     # Fetch stations from DB if available to avoid stale data
-    stations_list = config.stations
-    if config.db:
+    stations_list = cfg.stations
+    if cfg.db:
         try:
-            db_stations = config.db.get_stations()
+            db_stations = cfg.db.get_stations()
             if db_stations is not None:
                 stations_list = db_stations
         except Exception as e:
             _LOGGER.error("Failed to fetch stations from DB: %s", e)
 
+    data = ftr.fetch_station_price_data(stations_list)
+    if not data:
+        return jsonify({'error': 'Failed to fetch fuel prices'}), 500
+    
     # Filter for configured stations
     station_ids = [s['station_id'] for s in stations_list]
     fuel_types_by_station = {
@@ -448,6 +482,91 @@ def get_price_history():
         return jsonify({'error': 'Failed to fetch price history'}), 500
 
 
+@app.route('/api/alerts', methods=['GET'])
+def get_alerts():
+    """Get all configured price alerts."""
+    cfg, ftr = refresh_config_and_fetcher()
+    if not cfg or not cfg.db:
+        return jsonify({'error': 'Database not available'}), 500
+    
+    alerts = cfg.db.get_alerts()
+    
+    # Try to fetch station names
+    station_names = {}
+    if ftr:
+        try:
+            stations_to_fetch = [{'station_id': a['station_id']} for a in alerts]
+            data = ftr.fetch_station_price_data(stations_to_fetch)
+            if data and data.stations:
+                for s in data.stations.values():
+                    station_names[s.code] = s.name
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch station names for alerts: %s", e)
+    
+    for alert in alerts:
+        alert['station_name'] = station_names.get(alert['station_id'], f"Station {alert['station_id']}")
+        
+    return jsonify({'alerts': alerts})
+
+
+@app.route('/api/alerts', methods=['POST'])
+def add_alert():
+    """Add a new price alert."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not available'}), 500
+    
+    data = request.get_json()
+    station_id = data.get('station_id')
+    fuel_type = data.get('fuel_type')
+    threshold = data.get('threshold')
+    
+    if not station_id or not fuel_type or threshold is None:
+        return jsonify({'error': 'station_id, fuel_type, and threshold are required'}), 400
+    
+    try:
+        threshold = float(threshold)
+    except ValueError:
+        return jsonify({'error': 'Invalid threshold'}), 400
+    
+    if config.db.add_alert(station_id, fuel_type, threshold):
+        # Refresh in-memory alerts
+        config.alerts = config.db.get_alerts()
+        return jsonify({'message': 'Alert added successfully'}), 201
+    else:
+        return jsonify({'error': 'Failed to add alert'}), 500
+
+
+@app.route('/api/alerts/<int:alert_id>', methods=['DELETE'])
+def delete_alert(alert_id):
+    """Delete a price alert."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not available'}), 500
+    
+    if config.db.delete_alert(alert_id):
+        # Refresh in-memory alerts
+        config.alerts = config.db.get_alerts()
+        return jsonify({'message': 'Alert deleted successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to delete alert'}), 500
+
+
+@app.route('/api/alerts/<int:alert_id>/toggle', methods=['PUT'])
+def toggle_alert(alert_id):
+    """Toggle an alert enabled state."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not available'}), 500
+    
+    data = request.get_json()
+    enabled = data.get('enabled', True)
+    
+    if config.db.toggle_alert(alert_id, enabled):
+        # Refresh in-memory alerts
+        config.alerts = config.db.get_alerts()
+        return jsonify({'message': 'Alert toggled successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to toggle alert'}), 500
+
+
 @app.route('/api/fuel-types', methods=['GET'])
 def get_fuel_types():
     """Get list of allowed fuel types."""
@@ -475,6 +594,10 @@ def get_config():
         'influxdb_org': config.influxdb_org,
         'influxdb_bucket': config.influxdb_bucket,
         'influxdb_token': '***' if config.influxdb_token else '',
+        'fuel_api_client_id': config.fuel_api_client_id,
+        'fuel_api_client_secret': '***' if config.fuel_api_client_secret else '',
+        'discord_webhook_url': '***' if config.discord_webhook_url else '',
+        'discord_price_threshold': config.discord_price_threshold,
         'mqtt_broker': config.mqtt_broker,
         'mqtt_port': config.mqtt_port,
         'mqtt_user': config.mqtt_user,
@@ -509,8 +632,26 @@ def update_config():
     
     if 'influxdb_bucket' in data:
         config.influxdb_bucket = data['influxdb_bucket']
-        
+
+    # Update Fuel API settings
+    if 'fuel_api_client_id' in data:
+        config.fuel_api_client_id = data['fuel_api_client_id']
+
+    if 'fuel_api_client_secret' in data and data['fuel_api_client_secret'] and data['fuel_api_client_secret'] != '***':
+        config.fuel_api_client_secret = data['fuel_api_client_secret']
+
+    # Update Discord settings
+    if 'discord_webhook_url' in data and data['discord_webhook_url'] and data['discord_webhook_url'] != '***':
+        config.discord_webhook_url = data['discord_webhook_url']
+    
+    if 'discord_price_threshold' in data:
+        try:
+            config.discord_price_threshold = float(data['discord_price_threshold'])
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid Discord price threshold'}), 400
+
     # Update MQTT settings
+
     if 'mqtt_broker' in data:
         config.mqtt_broker = data['mqtt_broker']
     
@@ -553,9 +694,40 @@ def update_config():
     
     # Save to database
     if config.save_to_database():
+        # Re-initialize fetcher with new credentials
+        global fetcher
+        fetcher = FuelDataFetcher(
+            client_id=config.fuel_api_client_id,
+            client_secret=config.fuel_api_client_secret
+        )
         return jsonify({'message': 'Configuration updated successfully'}), 200
     else:
         return jsonify({'error': 'Failed to save configuration'}), 500
+
+
+@app.route('/api/config/discord/test', methods=['POST'])
+def test_discord_config():
+    """Test Discord notification configuration."""
+    data = request.get_json()
+    webhook_url = data.get('discord_webhook_url')
+    
+    # Fallback to stored webhook URL if not provided
+    if not webhook_url and config and config.discord_webhook_url:
+        webhook_url = config.discord_webhook_url
+
+    if not webhook_url:
+        return jsonify({'error': 'Webhook URL is required'}), 400
+        
+    from .notifications import DiscordClient
+    notifier = DiscordClient(webhook_url)
+    
+    message = "🔔 **FuelApp Test Notification**\nYour Discord webhook is configured correctly!"
+    success = notifier.send_notification(message)
+    
+    if success:
+        return jsonify({'message': 'Test notification sent successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to send test notification. Check your webhook URL and logs.'}), 400
 
 
 @app.route('/api/config/mqtt/test', methods=['POST'])
@@ -630,7 +802,7 @@ def generate_ha_card():
         if fetcher:
             try:
                 _LOGGER.info("Fetching station data for names...")
-                station_data = fetcher.fetch_station_price_data()
+                station_data = fetcher.fetch_station_price_data(stations_list)
                 if station_data and station_data.stations:
                     for s in station_data.stations.values():
                         station_names[s.code] = s.name
