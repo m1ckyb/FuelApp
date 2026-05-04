@@ -46,6 +46,9 @@ COPY --from=builder /usr/local/bin/influx /usr/local/bin/influx
 
 # Copy application files
 COPY run.py .
+COPY VERSION.txt .
+COPY CHANGELOG.md .
+COPY unreleased.md .
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY app/ ./app/
 COPY templates/ ./templates/
