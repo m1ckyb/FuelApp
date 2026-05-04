@@ -301,6 +301,18 @@
                             <i class="bi bi-gear-fill"></i> Settings
                         </a>
                     </li>
+                    {% if current_user.is_authenticated %}
+                    <li class="nav-item dropdown ms-lg-3">
+                        <a class="nav-link dropdown-toggle btn btn-outline-secondary text-white border-0 px-3" href="#" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-person-circle"></i> {{ current_user.username }}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="/settings#security"><i class="bi bi-shield-lock me-2"></i> Security</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item text-danger" href="/logout"><i class="bi bi-box-arrow-right me-2"></i> Logout</a></li>
+                        </ul>
+                    </li>
+                    {% endif %}
                 </ul>
             </div>
         </div>

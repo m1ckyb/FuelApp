@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}Login - NSW Fuel Monitor{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center align-items-center" style="min-height: 70vh;">
+    <div class="col-md-5">
+        <div class="card shadow">
+            <div class="card-header text-center py-3">
+                <h4 class="mb-0">
+                    <i class="bi bi-lock-fill"></i> Login
+                </h4>
+            </div>
+            <div class="card-body p-4">
+                {% if error %}
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i> {{ error }}
+                </div>
+                {% endif %}
+
+                <form method="POST" id="loginForm">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required autocomplete="username">
+                    </div>
+                    <div class="mb-4">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required autocomplete="current-password">
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary py-2">
+                            <i class="bi bi-box-arrow-in-right"></i> Sign In
+                        </button>
+                    </div>
+                </form>
+
+                <div class="divider my-4 d-flex align-items-center text-secondary">
+                    <hr class="flex-grow-1">
+                    <span class="mx-3">OR</span>
+                    <hr class="flex-grow-1">
+                </div>
+
+                <div class="d-grid">
+                    <button type="button" class="btn btn-outline-primary py-2" id="passkeyLoginBtn">
+                        <i class="bi bi-key-fill"></i> Sign in with Passkey
+                    </button>
+                </div>
+            </div>
+        </div>
+        <p class="text-center mt-4 text-secondary small">
+            &copy; 2026 FuelApp Monitor
+        </p>
+    </div>
+</div>
+
+<style>
+    .divider hr {
+        border-color: var(--border-color);
+        opacity: 0.3;
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Helper to convert base64url to Uint8Array
+    function base64urlToBytes(base64url) {
+        const padding = '='.repeat((4 - (base64url.length % 4)) % 4);
+        const base64 = (base64url + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+            outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+    }
+
+    // Helper to convert Uint8Array to base64url
+    function bytesToBase64url(bytes) {
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+        return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+
+    async function safeParseJSON(response) {
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            console.error('Failed to parse JSON response. Raw text (first 200 chars):', text.substring(0, 200));
+            throw new Error(`Invalid response from server (non-JSON). This may be caused by a reverse proxy or Cloudflare challenge.`);
+        }
+    }
+
+    document.getElementById('passkeyLoginBtn').addEventListener('click', async () => {
+        const btn = document.getElementById('passkeyLoginBtn');
+        const originalContent = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading-spinner me-2"></span> Initializing...';
+
+        try {
+            // 1. Get authentication options from server
+            const beginResponse = await fetch('/api/webauthn/login/begin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            if (!beginResponse.ok) {
+                const errData = await safeParseJSON(beginResponse);
+                throw new Error(errData.error || 'Failed to start Passkey login');
+            }
+            
+            const options = await beginResponse.json();
+            
+            // Convert byte strings to Uint8Arrays
+            options.challenge = base64urlToBytes(options.challenge);
+            if (options.allowCredentials) {
+                options.allowCredentials.forEach(cred => {
+                    cred.id = base64urlToBytes(cred.id);
+                });
+            }
+
+            // 2. Get credential from authenticator
+            btn.innerHTML = '<span class="loading-spinner me-2"></span> Use your device...';
+            const credential = await navigator.credentials.get({
+                publicKey: options
+            });
+
+            if (!credential) throw new Error('No credential received');
+
+            // 3. Send response to server for verification
+            btn.innerHTML = '<span class="loading-spinner me-2"></span> Verifying...';
+            const completeResponse = await fetch('/api/webauthn/login/complete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: credential.id,
+                    rawId: bytesToBase64url(credential.rawId),
+                    type: credential.type,
+                    response: {
+                        authenticatorData: bytesToBase64url(credential.response.authenticatorData),
+                        clientDataJSON: bytesToBase64url(credential.response.clientDataJSON),
+                        signature: bytesToBase64url(credential.response.signature),
+                        userHandle: credential.response.userHandle ? bytesToBase64url(credential.response.userHandle) : null,
+                    }
+                })
+            });
+
+            if (completeResponse.ok) {
+                window.location.href = '/';
+            } else {
+                const result = await safeParseJSON(completeResponse);
+                throw new Error(result.error || 'Verification failed');
+            }
+
+        } catch (err) {
+            console.error(err);
+            showToast(err.message || 'Passkey login failed', 'danger');
+            btn.disabled = false;
+            btn.innerHTML = originalContent;
+        }
+    });
+
+    // Check if WebAuthn is supported
+    if (!window.PublicKeyCredential) {
+        document.getElementById('passkeyLoginBtn').parentElement.style.display = 'none';
+        document.querySelector('.divider').style.display = 'none';
+    }
+</script>
+{% endblock %}

@@ -12,22 +12,89 @@ import zipfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from werkzeug.middleware.proxy_fix import ProxyFix
 from influxdb_client import InfluxDBClient
+from werkzeug.security import generate_password_hash, check_password_hash
+import webauthn
+from webauthn import (
+    generate_registration_options,
+    verify_registration_response,
+    generate_authentication_options,
+    verify_authentication_response,
+    options_to_json,
+    base64url_to_bytes,
+)
+from webauthn.helpers import (
+    bytes_to_base64url,
+)
+from webauthn.helpers.structs import (
+    AuthenticatorAttachment,
+    AuthenticatorSelectionCriteria,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+    RegistrationCredential,
+    AuthenticationCredential,
+)
 
 from .config import Config, ALLOWED_FUEL_TYPES, setup_logging
 from .data import FuelDataFetcher
 from .mqtt import MQTTClient
+from .notifications import DiscordClient
 
 _LOGGER = logging.getLogger(__name__)
 
+# Log WebAuthn version for debugging
+try:
+    import webauthn
+    _LOGGER.info("WebAuthn version: %s", getattr(webauthn, "__version__", "unknown"))
+except ImportError:
+    _LOGGER.warning("WebAuthn library not found")
+
 app = Flask(__name__, template_folder='../templates')
+login_manager = LoginManager()
+login_manager.login_view = "login"
+login_manager.login_message_category = "info"
 
 # Global config instance
 config: Optional[Config] = None
 fetcher: Optional[FuelDataFetcher] = None
+
+class User(UserMixin):
+    """User class for Flask-Login."""
+    def __init__(self, user_id, username):
+        self.id = user_id
+        self.username = username
+
+@login_manager.user_loader
+def load_user(user_id):
+    """Load user by ID."""
+    if not config or not config.db:
+        return None
+    user_data = config.db.get_user(int(user_id))
+    if user_data:
+        return User(user_data['id'], user_data['username'])
+    return None
+
+
+@login_manager.unauthorized_handler
+def unauthorized():
+    """Handle unauthorized requests."""
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    return redirect(url_for('login'))
+
+
+@app.errorhandler(500)
+def handle_500(error):
+    """Handle 500 errors with JSON for API requests."""
+    _LOGGER.error("Unhandled Exception: %s", error)
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Internal Server Error', 'message': str(error)}), 500
+    return "Internal Server Error", 500
 
 
 def create_app():
@@ -48,6 +115,8 @@ def create_app():
     setup_logging(config.log_level)
     _LOGGER.info("Web application logging initialized")
     
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+    login_manager.init_app(app)
     init_app(config)
     return app
 
@@ -103,6 +172,287 @@ def refresh_config_and_fetcher():
     return config, fetcher
 
 
+@app.before_request
+def check_auth():
+    """Check if the user is authenticated or if setup is required."""
+    if not config or not config.auth_enabled:
+        return
+    
+    # Check if we have any users. If not, redirect to setup
+    if config.db and config.db.get_user_count() == 0:
+        if request.endpoint not in ('setup', 'static'):
+            return redirect(url_for('setup'))
+        return
+
+    # Normal auth check
+    if not current_user.is_authenticated:
+        allowed_endpoints = (
+            'login', 
+            'setup', 
+            'static', 
+            'webauthn_login_begin', 
+            'webauthn_login_complete'
+        )
+        if request.endpoint not in allowed_endpoints:
+            if request.path.startswith('/api/'):
+                return jsonify({'error': 'Unauthorized'}), 401
+            return redirect(url_for('login'))
+
+
+@app.route('/setup', methods=['GET', 'POST'])
+def setup():
+    """First-run setup to create an admin user."""
+    if not config or not config.db:
+        return "Database not initialized", 500
+        
+    if config.db.get_user_count() > 0:
+        return redirect(url_for('login'))
+        
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        confirm_password = request.form.get('confirm_password')
+        
+        if not username or not password:
+            return render_template('setup.html', error="Username and password are required")
+            
+        if password != confirm_password:
+            return render_template('setup.html', error="Passwords do not match")
+            
+        password_hash = generate_password_hash(password)
+        user_id = config.db.create_user(username, password_hash)
+        
+        if user_id:
+            user = User(user_id, username)
+            login_user(user)
+            return redirect(url_for('index'))
+        else:
+            return render_template('setup.html', error="Failed to create user")
+            
+    return render_template('setup.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login page."""
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+        
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        user_data = config.db.get_user_by_username(username)
+        if user_data and check_password_hash(user_data['password_hash'], password):
+            user = User(user_data['id'], user_data['username'])
+            login_user(user, remember=True)
+            return redirect(url_for('index'))
+            
+        return render_template('login.html', error="Invalid username or password")
+        
+    return render_template('login.html')
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    """Logout the current user."""
+    logout_user()
+    return redirect(url_for('login'))
+
+
+# --- WebAuthn / Passkey Routes ---
+
+@app.route('/api/webauthn/register/begin', methods=['POST'])
+@login_required
+def webauthn_register_begin():
+    """Start WebAuthn registration process."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not initialized'}), 500
+        
+    user = current_user
+    
+    # Get existing credentials to avoid re-registration
+    existing_credentials = config.db.get_credentials_by_user(user.id)
+    exclude_credentials = []
+    for cred in existing_credentials:
+        exclude_credentials.append({
+            "id": cred['credential_id'],
+            "type": "public-key",
+        })
+        
+    registration_options = generate_registration_options(
+        rp_id=config.webauthn_rp_id,
+        rp_name=config.webauthn_rp_name,
+        user_id=str(user.id).encode(),
+        user_name=user.username,
+        exclude_credentials=exclude_credentials,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.PREFERRED,
+        ),
+    )
+    
+    # Store options in session for verification
+    session['registration_options'] = options_to_json(registration_options)
+    
+    return app.response_class(session['registration_options'], mimetype='application/json')
+
+
+@app.route('/api/webauthn/register/complete', methods=['POST'])
+@login_required
+def webauthn_register_complete():
+    """Complete WebAuthn registration process."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not initialized'}), 500
+        
+    options_json = session.pop('registration_options', None)
+    if not options_json:
+        return jsonify({'error': 'Registration session expired'}), 400
+        
+    registration_verification = verify_registration_response(
+        credential=request.get_json(),
+        expected_origin=request.host_url.rstrip('/'), # origin usually doesn't have trailing slash
+        expected_rp_id=config.webauthn_rp_id,
+        expected_challenge=base64url_to_bytes(json.loads(options_json)['challenge']),
+    )
+    
+    # Save credential to database
+    success = config.db.add_credential(
+        user_id=current_user.id,
+        credential_id=registration_verification.credential_id,
+        public_key=registration_verification.credential_public_key,
+        sign_count=registration_verification.sign_count,
+        transports=json.dumps(request.json.get('response', {}).get('transports', []))
+    )
+    
+    if success:
+        return jsonify({'message': 'Passkey registered successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to save credential'}), 500
+
+
+@app.route('/api/webauthn/login/begin', methods=['POST'])
+def webauthn_login_begin():
+    """Start WebAuthn login process."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not initialized'}), 500
+        
+    # We can do "discoverable credentials" (resident keys) if we don't know the username yet
+    # Or we can ask for username first. Let's try discoverable credentials first.
+    
+    authentication_options = generate_authentication_options(
+        rp_id=config.webauthn_rp_id,
+        user_verification=UserVerificationRequirement.PREFERRED,
+    )
+    
+    session['authentication_options'] = options_to_json(authentication_options)
+    
+    return app.response_class(session['authentication_options'], mimetype='application/json')
+
+
+@app.route('/api/webauthn/login/complete', methods=['POST'])
+def webauthn_login_complete():
+    """Complete WebAuthn login process."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not initialized'}), 500
+        
+    options_json = session.pop('authentication_options', None)
+    if not options_json:
+        return jsonify({'error': 'Login session expired'}), 400
+        
+    credential_dict = request.get_json()
+    credential_id_bin = base64url_to_bytes(credential_dict.get('id'))
+    
+    # Find credential in database
+    db_credential = config.db.get_credential_by_id(credential_id_bin)
+    if not db_credential:
+        _LOGGER.error("Credential not found: %s", credential_dict.get('id'))
+        return jsonify({'error': 'Credential not found'}), 404
+        
+    authentication_verification = verify_authentication_response(
+        credential=credential_dict,
+        expected_origin=request.host_url.rstrip('/'),
+        expected_rp_id=config.webauthn_rp_id,
+        expected_challenge=base64url_to_bytes(json.loads(options_json)['challenge']),
+        credential_public_key=db_credential['public_key'],
+        credential_current_sign_count=db_credential['sign_count'],
+    )
+    
+    # Update sign count
+    config.db.update_credential_sign_count(
+        credential_id=db_credential['credential_id'],
+        sign_count=authentication_verification.new_sign_count
+    )
+    
+    # Login user
+    user_data = config.db.get_user(db_credential['user_id'])
+    if user_data:
+        user = User(user_data['id'], user_data['username'])
+        login_user(user, remember=True)
+        return jsonify({'message': 'Logged in successfully'}), 200
+        
+    return jsonify({'error': 'User not found'}), 404
+
+
+@app.route('/api/webauthn/credentials', methods=['GET'])
+@login_required
+def webauthn_credentials():
+    """Get list of registered WebAuthn credentials for current user."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not initialized'}), 500
+        
+    credentials = config.db.get_credentials_by_user(current_user.id)
+    # Convert binary credential_id to hex for easier transport
+    result = []
+    for cred in credentials:
+        result.append({
+            'id': cred['credential_id'].hex(),
+            'sign_count': cred['sign_count'],
+            'transports': json.loads(cred['transports']) if cred['transports'] else []
+        })
+    return jsonify({'credentials': result})
+
+
+@app.route('/api/webauthn/credentials/<string:credential_id_hex>', methods=['DELETE'])
+@login_required
+def webauthn_delete_credential(credential_id_hex):
+    """Delete a WebAuthn credential."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not initialized'}), 500
+        
+    success = config.db.delete_credential(credential_id_hex, current_user.id)
+    if success:
+        return jsonify({'message': 'Credential deleted successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to delete credential'}), 500
+
+
+@app.route('/api/config/password', methods=['PUT'])
+@login_required
+def update_password():
+    """Update user password."""
+    if not config or not config.db:
+        return jsonify({'error': 'Database not initialized'}), 500
+        
+    data = request.json
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+    
+    if not current_password or not new_password:
+        return jsonify({'error': 'Missing password data'}), 400
+        
+    user_data = config.db.get_user(current_user.id)
+    if not user_data or not check_password_hash(user_data['password_hash'], current_password):
+        return jsonify({'error': 'Invalid current password'}), 401
+        
+    password_hash = generate_password_hash(new_password)
+    if config.db.update_password(current_user.id, password_hash):
+        return jsonify({'message': 'Password updated successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to update password'}), 500
+
+
 @app.route('/')
 def index():
     """Dashboard page."""
@@ -128,6 +478,7 @@ def settings():
 
 
 @app.route('/api/stations/lookup', methods=['GET'])
+@login_required
 def lookup_station():
     """Lookup station details and available fuel types."""
     cfg, ftr = refresh_config_and_fetcher()
@@ -165,6 +516,7 @@ def lookup_station():
 
 
 @app.route('/api/stations', methods=['GET'])
+@login_required
 def get_stations():
     """Get all configured stations."""
     cfg, ftr = refresh_config_and_fetcher()
@@ -206,6 +558,7 @@ def get_stations():
 
 
 @app.route('/api/stations', methods=['POST'])
+@login_required
 def add_station():
     """Add a new station to configuration."""
     if not config:
@@ -247,6 +600,7 @@ def add_station():
 
 
 @app.route('/api/stations/<int:station_id>', methods=['DELETE'])
+@login_required
 def delete_station(station_id):
     """Delete a station from configuration."""
     if not config:
@@ -262,6 +616,7 @@ def delete_station(station_id):
 
 
 @app.route('/api/stations/<int:station_id>', methods=['PUT'])
+@login_required
 def update_station(station_id):
     """Update a station configuration."""
     if not config:
@@ -292,6 +647,7 @@ def update_station(station_id):
 
 
 @app.route('/api/prices/current', methods=['GET'])
+@login_required
 def get_current_prices():
     """Get current fuel prices from the API."""
     cfg, ftr = refresh_config_and_fetcher()
@@ -419,6 +775,7 @@ def get_current_prices():
 
 
 @app.route('/api/prices/history', methods=['GET'])
+@login_required
 def get_price_history():
     """Get historical fuel prices from InfluxDB."""
     if not config:
@@ -483,6 +840,7 @@ def get_price_history():
 
 
 @app.route('/api/alerts', methods=['GET'])
+@login_required
 def get_alerts():
     """Get all configured price alerts."""
     cfg, ftr = refresh_config_and_fetcher()
@@ -510,6 +868,7 @@ def get_alerts():
 
 
 @app.route('/api/alerts', methods=['POST'])
+@login_required
 def add_alert():
     """Add a new price alert."""
     if not config or not config.db:
@@ -537,6 +896,7 @@ def add_alert():
 
 
 @app.route('/api/alerts/<int:alert_id>', methods=['DELETE'])
+@login_required
 def delete_alert(alert_id):
     """Delete a price alert."""
     if not config or not config.db:
@@ -551,6 +911,7 @@ def delete_alert(alert_id):
 
 
 @app.route('/api/alerts/<int:alert_id>/toggle', methods=['PUT'])
+@login_required
 def toggle_alert(alert_id):
     """Toggle an alert enabled state."""
     if not config or not config.db:
@@ -568,12 +929,14 @@ def toggle_alert(alert_id):
 
 
 @app.route('/api/fuel-types', methods=['GET'])
+@login_required
 def get_fuel_types():
     """Get list of allowed fuel types."""
     return jsonify({'fuel_types': ALLOWED_FUEL_TYPES})
 
 
 @app.route('/api/config', methods=['GET'])
+@login_required
 def get_config():
     """Get current configuration."""
     if not config:
@@ -607,11 +970,15 @@ def get_config():
         'cron_schedule': config.cron_schedule,
         'timezone': config.timezone,
         'log_level': config.log_level,
+        'auth_enabled': config.auth_enabled,
+        'webauthn_rp_id': config.webauthn_rp_id,
+        'webauthn_rp_name': config.webauthn_rp_name,
         'version': config.version
     })
 
 
 @app.route('/api/config', methods=['PUT'])
+@login_required
 def update_config():
     """Update configuration settings."""
     if not config:
@@ -691,6 +1058,16 @@ def update_config():
         if log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
             return jsonify({'error': 'Invalid log level'}), 400
         config.log_level = log_level
+
+    # Auth settings
+    if 'auth_enabled' in data:
+        config.auth_enabled = str(data['auth_enabled']).lower() == 'true'
+    
+    if 'webauthn_rp_id' in data:
+        config.webauthn_rp_id = data['webauthn_rp_id']
+        
+    if 'webauthn_rp_name' in data:
+        config.webauthn_rp_name = data['webauthn_rp_name']
     
     # Save to database
     if config.save_to_database():
@@ -706,6 +1083,7 @@ def update_config():
 
 
 @app.route('/api/config/discord/test', methods=['POST'])
+@login_required
 def test_discord_config():
     """Test Discord notification configuration."""
     data = request.get_json()
@@ -731,6 +1109,7 @@ def test_discord_config():
 
 
 @app.route('/api/config/mqtt/test', methods=['POST'])
+@login_required
 def test_mqtt_config():
     """Test MQTT configuration."""
     data = request.get_json()
@@ -770,6 +1149,7 @@ def ha_slugify(text):
     return text
 
 @app.route('/api/ha/generate-card', methods=['POST'])
+@login_required
 def generate_ha_card():
     """Generate Home Assistant Lovelace card configuration."""
     try:
@@ -898,8 +1278,9 @@ cards:
 
 
 @app.route('/api/backup', methods=['POST'])
+@login_required
 def create_backup():
-    """Create a backup of InfluxDB data."""
+    """Create a backup of InfluxDB data and return the filename."""
     if not config:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
@@ -908,8 +1289,9 @@ def create_backup():
         backup_dir = Path(config.data_dir) / 'backups' / timestamp
         backup_dir.mkdir(parents=True, exist_ok=True)
         
+        _LOGGER.info("Starting InfluxDB backup to %s", backup_dir)
+        
         # Run influx backup command
-        # Note: Requires influx CLI to be installed in the container
         cmd = [
             "influx", "backup",
             str(backup_dir),
@@ -922,34 +1304,63 @@ def create_backup():
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
-            _LOGGER.error("Backup failed: %s", result.stderr)
-            return jsonify({'error': f'Backup failed: {result.stderr}'}), 500
+            _LOGGER.error("Backup failed (code %d): %s\nStdout: %s", result.returncode, result.stderr, result.stdout)
+            return jsonify({'error': f'Backup failed: {result.stderr or "Unknown error"}'}), 500
             
+        _LOGGER.info("Backup command successful, creating zip file")
+        
         # Create zip file
-        zip_path = Path(config.data_dir) / 'backups' / f"backup_{timestamp}.zip"
+        zip_filename = f"backup_{timestamp}.zip"
+        zip_path = Path(config.data_dir) / 'backups' / zip_filename
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            files_added = 0
             for root, dirs, files in os.walk(backup_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, backup_dir)
                     zipf.write(file_path, arcname)
-                    
+                    files_added += 1
+        
+        _LOGGER.info("Zip file created: %s (added %d files)", zip_path, files_added)
+        
         # Clean up directory
         shutil.rmtree(backup_dir)
         
-        return send_file(
-            zip_path,
-            as_attachment=True,
-            download_name=f"fuelapp_backup_{timestamp}.zip",
-            mimetype='application/zip'
-        )
+        return jsonify({
+            'message': 'Backup created successfully',
+            'filename': zip_filename,
+            'size': zip_path.stat().st_size
+        }), 200
         
     except Exception as exc:
         _LOGGER.error("Backup exception: %s", exc)
         return jsonify({'error': str(exc)}), 500
 
 
+@app.route('/api/backup/download/<filename>', methods=['GET'])
+@login_required
+def download_backup(filename):
+    """Download a previously created backup file."""
+    # Security check: only allow files in the backups directory and with .zip extension
+    if '..' in filename or not filename.endswith('.zip'):
+        return jsonify({'error': 'Invalid filename'}), 400
+        
+    zip_path = Path(config.data_dir) / 'backups' / filename
+    if not zip_path.exists():
+        return jsonify({'error': 'Backup file not found'}), 404
+        
+    _LOGGER.info("Streaming backup file to client: %s (%d bytes)", filename, zip_path.stat().st_size)
+    
+    return send_file(
+        zip_path,
+        as_attachment=True,
+        download_name=f"fuelapp_{filename}",
+        mimetype='application/zip'
+    )
+
+
 @app.route('/api/restore', methods=['POST'])
+@login_required
 def restore_backup():
     """Restore InfluxDB data from a backup zip file."""
     if not config:

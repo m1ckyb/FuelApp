@@ -141,6 +141,30 @@ class ConfigDatabase:
                 UNIQUE(station_id, fuel_type)
             )
         """)
+
+        # Create users table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create webauthn_credentials table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS webauthn_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                credential_id BLOB UNIQUE NOT NULL,
+                public_key BLOB NOT NULL,
+                sign_count INTEGER NOT NULL DEFAULT 0,
+                transports TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            )
+        """)
         
         # Add au_state column if it doesn't exist (for migration)
         try:
@@ -385,6 +409,144 @@ class ConfigDatabase:
             _LOGGER.error("Failed to toggle alert %d: %s", alert_id, exc)
             return False
 
+    # --- User Management ---
+
+    def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get a user by ID."""
+        if not self.conn:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, username, password_hash FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Get a user by username."""
+        if not self.conn:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, username, password_hash FROM users WHERE username = ?", (username,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def create_user(self, username: str, password_hash: str) -> Optional[int]:
+        """Create a new user and return the ID."""
+        if not self.conn:
+            return None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (username, password_hash)
+            )
+            self.conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            _LOGGER.error("User %s already exists", username)
+            return None
+        except Exception as exc:
+            _LOGGER.error("Failed to create user %s: %s", username, exc)
+            return None
+
+    def update_password(self, user_id: int, password_hash: str) -> bool:
+        """Update a user's password hash."""
+        if not self.conn:
+            return False
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (password_hash, user_id)
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as exc:
+            _LOGGER.error("Failed to update password for user %d: %s", user_id, exc)
+            return False
+
+    def get_user_count(self) -> int:
+        """Get the total number of users."""
+        if not self.conn:
+            return 0
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        return cursor.fetchone()[0]
+
+    # --- WebAuthn Credential Management ---
+
+    def get_credentials_by_user(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get all WebAuthn credentials for a user."""
+        if not self.conn:
+            return []
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id, credential_id, public_key, sign_count, transports FROM webauthn_credentials WHERE user_id = ?",
+            (user_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_credential_by_id(self, credential_id: bytes) -> Optional[Dict[str, Any]]:
+        """Get a WebAuthn credential by its ID."""
+        if not self.conn:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id, user_id, credential_id, public_key, sign_count, transports FROM webauthn_credentials WHERE credential_id = ?",
+            (credential_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def add_credential(self, user_id: int, credential_id: bytes, public_key: bytes, sign_count: int, transports: Optional[str] = None) -> bool:
+        """Add a new WebAuthn credential for a user."""
+        if not self.conn:
+            return False
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "INSERT INTO webauthn_credentials (user_id, credential_id, public_key, sign_count, transports) VALUES (?, ?, ?, ?, ?)",
+                (user_id, credential_id, public_key, sign_count, transports)
+            )
+            self.conn.commit()
+            return True
+        except Exception as exc:
+            _LOGGER.error("Failed to add credential for user %d: %s", user_id, exc)
+            return False
+
+    def update_credential_sign_count(self, credential_id: bytes, sign_count: int) -> bool:
+        """Update the sign count for a WebAuthn credential."""
+        if not self.conn:
+            return False
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE webauthn_credentials SET sign_count = ? WHERE credential_id = ?",
+                (sign_count, credential_id)
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as exc:
+            _LOGGER.error("Failed to update sign count: %s", exc)
+            return False
+
+    def delete_credential(self, credential_id_hex: str, user_id: int) -> bool:
+        """Delete a WebAuthn credential."""
+        if not self.conn:
+            return False
+        try:
+            # We receive hex from UI usually
+            credential_id = bytes.fromhex(credential_id_hex)
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "DELETE FROM webauthn_credentials WHERE credential_id = ? AND user_id = ?",
+                (credential_id, user_id)
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as exc:
+            _LOGGER.error("Failed to delete credential: %s", exc)
+            return False
+
     def close(self):
         """Close database connection."""
         if self.conn:
@@ -432,6 +594,11 @@ class Config:
         self.cron_schedule: str = ""
         self.timezone: str = DEFAULT_TIMEZONE
         self.log_level: str = DEFAULT_LOG_LEVEL
+
+        # Authentication Settings
+        self.auth_enabled: bool = True
+        self.webauthn_rp_id: str = "localhost"  # Should be the base domain for wildcard support
+        self.webauthn_rp_name: str = "FuelApp"
         
         self.db: Optional[ConfigDatabase] = None
         self.version: str = self._load_version()
@@ -596,6 +763,11 @@ class Config:
             self.timezone = settings.get('timezone', self.timezone)
             self.log_level = settings.get('log_level', self.log_level)
             
+            # Auth settings
+            self.auth_enabled = settings.get('auth_enabled', 'true').lower() == 'true'
+            self.webauthn_rp_id = settings.get('webauthn_rp_id', self.webauthn_rp_id)
+            self.webauthn_rp_name = settings.get('webauthn_rp_name', self.webauthn_rp_name)
+
             # Load stations and alerts
             self.stations = self.db.get_stations()
             self.alerts = self.db.get_alerts()
@@ -644,6 +816,11 @@ class Config:
             self.db.set_setting('timezone', self.timezone)
             self.db.set_setting('log_level', self.log_level)
             
+            # Auth settings
+            self.db.set_setting('auth_enabled', 'true' if self.auth_enabled else 'false')
+            self.db.set_setting('webauthn_rp_id', self.webauthn_rp_id)
+            self.db.set_setting('webauthn_rp_name', self.webauthn_rp_name)
+
             # Save stations
             for station in self.stations:
                 self.db.add_station(
@@ -696,6 +873,11 @@ class Config:
             self.db.set_setting('timezone', self.timezone)
             self.db.set_setting('log_level', self.log_level)
             
+            # Auth settings
+            self.db.set_setting('auth_enabled', 'true' if self.auth_enabled else 'false')
+            self.db.set_setting('webauthn_rp_id', self.webauthn_rp_id)
+            self.db.set_setting('webauthn_rp_name', self.webauthn_rp_name)
+
             _LOGGER.info("Configuration saved to database")
             return True
             

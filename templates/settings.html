@@ -89,6 +89,49 @@
                 </div>
             </div>
 
+            <!-- Account Security -->
+            <div class="card mt-4" id="security">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-shield-lock"></i> Account Security</span>
+                </div>
+                <div class="card-body">
+                    <div class="mb-4">
+                        <h6 class="mb-3 text-white">Change Password</h6>
+                        <form id="changePasswordForm">
+                            <div class="mb-3">
+                                <label class="form-label small">Current Password</label>
+                                <input type="password" class="form-control" id="currentPassword" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label small">New Password</label>
+                                <input type="password" class="form-control" id="newPassword" required>
+                            </div>
+                            <button type="submit" class="btn btn-sm btn-outline-primary">Update Password</button>
+                        </form>
+                    </div>
+
+                    <hr class="border-secondary opacity-25">
+
+                    <div>
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h6 class="mb-0 text-white">Passkeys (WebAuthn)</h6>
+                            <button class="btn btn-sm btn-outline-success" onclick="registerPasskey()">
+                                <i class="bi bi-plus-circle"></i> Add Passkey
+                            </button>
+                        </div>
+                        <div id="passkeysList">
+                            <div class="text-center py-3 text-secondary small">
+                                Loading passkeys...
+                            </div>
+                        </div>
+                        <p class="small text-secondary mb-0 mt-3">
+                            <i class="bi bi-info-circle"></i>
+                            Passkeys allow you to sign in securely without a password using your device's biometric or security key.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
             <!-- Backup & Restore -->
             <div class="card mt-4">
                 <div class="card-header">
@@ -265,23 +308,28 @@
     async function loadConfig() {
         try {
             const response = await fetch('/api/config');
-            const data = await response.json();
             
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to load configuration');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to load configuration');
             }
             
+            const data = await response.json();
+
             currentConfig = data;
             displayConfig(data);
             displayMqttConfig(data);
             displayAppSettings(data);
             displayApiConfig(data);
             displayDiscordConfig(data);
-            
+
             // Set version info
             if (data.version) {
                 document.getElementById('appVersion').textContent = data.version;
             }
+
+            // Load passkeys
+            loadPasskeys();
         } catch (error) {
             console.error('Error loading configuration:', error);
             document.getElementById('configContainer').innerHTML = `
@@ -292,7 +340,6 @@
             `;
         }
     }
-    
     function displayConfig(config) {
         const container = document.getElementById('configContainer');
         
@@ -341,7 +388,7 @@
     
     function displayAppSettings(config) {
         const container = document.getElementById('appSettingsContainer');
-        
+
         const html = `
             <div class="mb-3">
                 <span class="config-label">Poll Interval</span>
@@ -359,11 +406,16 @@
                 <span class="config-label">Log Level</span>
                 <div class="config-value">${config.log_level}</div>
             </div>
+            <hr class="border-secondary opacity-25">
+            <div class="mb-3">
+                <span class="config-label">Passkey RP ID (Domain)</span>
+                <div class="config-value font-monospace">${escapeHtml(config.webauthn_rp_id)}</div>
+                <small class="text-secondary">Set to base domain (e.g. site.com) for wildcard subdomain support.</small>
+            </div>
         `;
-        
+
         container.innerHTML = html;
     }
-
     function displayApiConfig(config) {
         const container = document.getElementById('apiConfigContainer');
         
@@ -464,11 +516,12 @@
                 body: JSON.stringify(formData)
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to save configuration');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to save configuration');
             }
+            
+            const data = await response.json();
             
             showToast('Discord configuration saved successfully', 'success');
             await loadConfig();
@@ -499,11 +552,12 @@
                 body: JSON.stringify(formData)
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Test failed');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Test failed');
             }
+            
+            const data = await response.json();
             
             showToast(data.message, 'success');
         } catch (error) {
@@ -568,11 +622,12 @@
                 body: JSON.stringify(formData)
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to save configuration');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to save configuration');
             }
+            
+            const data = await response.json();
             
             showToast('API configuration saved successfully', 'success');
             await loadConfig();
@@ -703,11 +758,12 @@
                 body: JSON.stringify(formData)
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to save configuration');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to save configuration');
             }
+            
+            const data = await response.json();
             
             showToast('MQTT configuration saved successfully', 'success');
             await loadConfig();
@@ -741,11 +797,12 @@
                 body: JSON.stringify(formData)
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Connection failed');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Connection failed');
             }
+            
+            const data = await response.json();
             
             showToast(data.message, 'success');
         } catch (error) {
@@ -776,11 +833,12 @@
                 body: JSON.stringify(formData)
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to save configuration');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to save configuration');
             }
+            
+            const data = await response.json();
             
             showToast('Configuration saved successfully', 'success');
             await loadConfig();
@@ -824,6 +882,12 @@
                         <option value="CRITICAL" ${currentConfig.log_level === 'CRITICAL' ? 'selected' : ''}>CRITICAL</option>
                     </select>
                 </div>
+                <div class="mb-3">
+                    <label for="webauthn_rp_id" class="form-label">Passkey RP ID (Domain)</label>
+                    <input type="text" class="form-control font-monospace" id="webauthn_rp_id" 
+                           value="${currentConfig.webauthn_rp_id}" required>
+                    <small class="text-secondary">Base domain for authentication. Must match the domain users visit.</small>
+                </div>
                 <div class="d-flex gap-2">
                     <button type="submit" class="btn btn-success">
                         <i class="bi bi-check-lg"></i> Save
@@ -851,7 +915,8 @@
             poll_interval: parseInt(document.getElementById('poll_interval').value),
             cron_schedule: document.getElementById('cron_schedule').value,
             timezone: document.getElementById('timezone').value,
-            log_level: document.getElementById('log_level').value
+            log_level: document.getElementById('log_level').value,
+            webauthn_rp_id: document.getElementById('webauthn_rp_id').value
         };
         
         try {
@@ -863,11 +928,12 @@
                 body: JSON.stringify(formData)
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to save settings');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to save settings');
             }
+            
+            const data = await response.json();
             
             showToast('Settings saved successfully', 'success');
             await loadConfig();
@@ -900,11 +966,12 @@
                 body: JSON.stringify({ fuel_type: fuelType })
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to generate card');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to generate card');
             }
+            
+            const data = await response.json();
             
             document.getElementById('haCardOutput').value = data.yaml;
             document.getElementById('haCardResult').style.display = 'block';
@@ -957,6 +1024,19 @@
         return text.replace(/[&<>"']/g, m => map[m]);
     }
 
+    async function safeParseJSON(response) {
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            console.error('Failed to parse JSON response. Raw text (first 200 chars):', text.substring(0, 200));
+            // Show a bit of the raw response to help debugging proxy issues
+            const snippet = text.substring(0, 100).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            throw new Error(`Invalid response (non-JSON). Server returned: "${snippet}..."`);
+        }
+    }
+
+
     async function createBackup() {
         const btn = document.getElementById('backupBtn');
         const originalText = btn.innerHTML;
@@ -965,25 +1045,20 @@
             btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Creating...';
             btn.disabled = true;
             
+            // 1. Create the backup on the server
             const response = await fetch('/api/backup', { method: 'POST' });
             
             if (!response.ok) {
-                const data = await response.json();
-                throw new Error(data.error || 'Backup failed');
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Backup creation failed');
             }
             
-            // Trigger download
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = response.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
+            const data = await response.json();
             
-            showToast('Backup created successfully', 'success');
+            // 2. Trigger the download using a standard GET request (more proxy friendly)
+            showToast('Backup created. Downloading...', 'success');
+            window.location.href = `/api/backup/download/${data.filename}`;
+            
         } catch (error) {
             console.error('Backup error:', error);
             showToast(error.message, 'error');
@@ -1017,9 +1092,8 @@
                 body: formData
             });
             
-            const data = await response.json();
-            
             if (!response.ok) {
+                const data = await safeParseJSON(response);
                 throw new Error(data.error || 'Restore failed');
             }
             
@@ -1032,6 +1106,169 @@
             btn.disabled = false;
             input.value = '';
         }
+    }
+
+    // --- Passkey & Password Management ---
+
+    async function loadPasskeys() {
+        const container = document.getElementById('passkeysList');
+        try {
+            const response = await fetch('/api/webauthn/credentials');
+            
+            if (!response.ok) {
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to load passkeys');
+            }
+            
+            const data = await response.json();
+            
+            if (data.credentials.length === 0) {
+                container.innerHTML = '<div class="text-center py-3 text-secondary small">No passkeys registered</div>';
+                return;
+            }
+            
+            let html = '<div class="list-group list-group-flush">';
+            data.credentials.forEach(cred => {
+                html += `
+                    <div class="list-group-item bg-transparent border-secondary px-0 py-2 d-flex justify-content-between align-items-center">
+                        <div>
+                            <div class="text-white small font-monospace">${cred.id.substring(0, 16)}...</div>
+                            <div class="text-secondary" style="font-size: 0.75rem;">
+                                Sign count: ${cred.sign_count} | Transports: ${cred.transports.join(', ') || 'unknown'}
+                            </div>
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger border-0" onclick="deletePasskey('${cred.id}')" title="Delete Passkey">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        } catch (error) {
+            console.error(error);
+            container.innerHTML = `<div class="text-danger small">${error.message}</div>`;
+        }
+    }
+
+    async function registerPasskey() {
+        try {
+            const beginResponse = await fetch('/api/webauthn/register/begin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            if (!beginResponse.ok) {
+                const errorData = await safeParseJSON(beginResponse);
+                throw new Error(errorData.error || 'Failed to start registration');
+            }
+            
+            const options = await beginResponse.json();
+            
+            options.challenge = base64urlToBytes(options.challenge);
+            options.user.id = base64urlToBytes(options.user.id);
+            if (options.excludeCredentials) {
+                options.excludeCredentials.forEach(cred => {
+                    cred.id = base64urlToBytes(cred.id);
+                });
+            }
+
+            const credential = await navigator.credentials.create({
+                publicKey: options
+            });
+
+            if (!credential) throw new Error('No credential created');
+
+            const completeResponse = await fetch('/api/webauthn/register/complete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: credential.id,
+                    rawId: bytesToBase64url(credential.rawId),
+                    type: credential.type,
+                    response: {
+                        attestationObject: bytesToBase64url(credential.response.attestationObject),
+                        clientDataJSON: bytesToBase64url(credential.response.clientDataJSON),
+                        transports: credential.response.getTransports ? credential.response.getTransports() : [],
+                    }
+                })
+            });
+
+            if (!completeResponse.ok) {
+                const errorData = await safeParseJSON(completeResponse);
+                throw new Error(errorData.error || 'Failed to complete registration');
+            }
+
+            const result = await completeResponse.json();
+            
+            showToast('Passkey registered successfully', 'success');
+            loadPasskeys();
+        } catch (error) {
+            console.error(error);
+            showToast(error.message, 'error');
+        }
+    }
+
+    async function deletePasskey(id) {
+        if (!confirm('Are you sure you want to delete this passkey?')) return;
+        
+        try {
+            const response = await fetch(`/api/webauthn/credentials/${id}`, { method: 'DELETE' });
+            
+            if (!response.ok) {
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to delete passkey');
+            }
+            
+            const data = await response.json();
+            
+            showToast('Passkey deleted', 'success');
+            loadPasskeys();
+        } catch (error) {
+            showToast(error.message, 'error');
+        }
+    }
+
+    document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const currentPassword = document.getElementById('currentPassword').value;
+        const newPassword = document.getElementById('newPassword').value;
+        
+        try {
+            const response = await fetch('/api/config/password', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
+            });
+            
+            if (!response.ok) {
+                const errorData = await safeParseJSON(response);
+                throw new Error(errorData.error || 'Failed to update password');
+            }
+            
+            const data = await response.json();
+            
+            showToast('Password updated successfully', 'success');
+            e.target.reset();
+        } catch (error) {
+            showToast(error.message, 'error');
+        }
+    });
+
+    function base64urlToBytes(base64url) {
+        const padding = '='.repeat((4 - (base64url.length % 4)) % 4);
+        const base64 = (base64url + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+            outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+    }
+
+    function bytesToBase64url(bytes) {
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+        return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
     }
 </script>
 {% endblock %}

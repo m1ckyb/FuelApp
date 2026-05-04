@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-04
+### Added
+- Implemented a robust authentication system supporting traditional Username/Password and modern Passkeys (WebAuthn).
+- Added a first-run setup flow for initial administrator account creation.
+- Added Passkey management in settings, including support for wildcard subdomains by configuring the Relying Party ID.
+- Added an Account Security section in settings for password updates and WebAuthn credential management.
+- Added support for "Remember Me" sessions to maintain user login across browser restarts.
+- Integrated WebAuthn "discoverable credentials" (resident keys) allowing users to log in with a passkey without entering a username.
+- Added a user dropdown menu to the navigation bar for easy access to security settings and logout.
+- Added `ProxyFix` middleware support for better compatibility with reverse proxies (Cloudflare, Nginx).
+- Implemented a global 500 error handler that returns JSON for API requests.
+- Added enhanced frontend diagnostic logging to catch and report non-JSON responses from proxies.
+
+### Changed
+- All web interface and API routes are now protected by authentication.
+- Updated `requirements.txt` with `Flask-Login` and `webauthn` dependencies.
+- Updated database schema to store users and WebAuthn credentials securely.
+- Updated navigation bar to conditionally display user-specific options.
+- Hardened all API endpoints with consistent `@login_required` decorators.
+- Improved API authentication to return `401 Unauthorized` JSON instead of HTML redirects for better frontend compatibility.
+- Improved backup download reliability through reverse proxies by utilizing a two-step Create (POST) and Download (GET) workflow.
+
+### Fixed
+- Resolved security vulnerability where the web interface and API were accessible without authentication.
+- Fixed `AttributeError` during Passkey registration and login caused by library version mismatches.
+- Fixed logic bug in backup download frontend that caused "Invalid response" errors on successful downloads.
+- Resolved Passkey "Origin Mismatch" errors by correctly configuring the Relying Party ID for the target domain.
+
 ## [0.1.0] - 2026-05-04
 ### Added
 - Multi-state support: Added ability to monitor fuel stations in both New South Wales (NSW) and Tasmania (TAS).

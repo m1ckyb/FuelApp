@@ -9,6 +9,7 @@ This application is based on the [Home Assistant NSW Fuel Station integration](h
 ## Features
 
 - 🇦🇺 **Multi-State Support**: Monitor fuel stations in both New South Wales and Tasmania.
+- 🔐 **Robust Security**: Full authentication system with support for traditional passwords and modern **Passkeys (WebAuthn)**.
 - 📊 **Real-time Monitoring**: Fetches prices from NSW/TAS FuelCheck APIs at configurable intervals.
 - 💾 **Historical Persistence**: Stores every price change in InfluxDB 2.x for long-term trend analysis.
 - 🌐 **Modern Web UI**: A dark-themed, responsive dashboard for visualizing trends and managing stations.
