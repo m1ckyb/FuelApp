@@ -13,6 +13,7 @@ This application is based on the [Home Assistant NSW Fuel Station integration](h
 - 📊 **Real-time Monitoring**: Fetches prices from NSW/TAS FuelCheck APIs at configurable intervals.
 - 💾 **Historical Persistence**: Stores every price change in InfluxDB 2.x for long-term trend analysis.
 - 🌐 **Modern Web UI**: A dark-themed, responsive dashboard for visualizing trends and managing stations.
+- 🔍 **Station Lookup**: Easily find stations and pre-select available fuel types by ID.
 - 🔔 **Discord Notifications**: Get notified of price hikes via Discord webhooks.
 - 🚨 **Price Alerts**: Configure granular alerts for specific stations and fuel types with custom thresholds.
 - 🏠 **Home Assistant Integration**: Built-in MQTT discovery for seamless integration with Home Assistant.

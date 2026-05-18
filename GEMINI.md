@@ -5,20 +5,21 @@ NSW Fuel Station Price Monitor is a standalone Python application designed to tr
 
 ## Architecture
 The application is built with a modular architecture:
-- **Application Core**: Orchestrated by `main.py`, handling both background polling (using `schedule`) and the web server.
-- **Data Acquisition**: `fuel_data.py` manages requests to the NSW FuelCheck API, parsing and formatting the responses.
-- **Data Persistence**: `influxdb_writer.py` handles writing price data to InfluxDB 2.x, ensuring historical tracking.
-- **Web Interface**: A Flask-based web application (`web_app.py`) serves a responsive UI using Jinja2 templates (`templates/`) and Chart.js for data visualization.
-- **Configuration Management**: `config_loader.py` provides a unified way to load settings from YAML files and environment variables.
+- **Application Core**: Orchestrated by `app/main.py`, handling both background polling (using `schedule`) and the web server.
+- **Data Acquisition**: `app/data.py` manages requests to the NSW FuelCheck API and writing to InfluxDB.
+- **Web Interface**: A Flask-based web application (`app/web.py`) serves a responsive UI using Jinja2 templates (`templates/`) and Chart.js for data visualization.
+- **Configuration Management**: `app/config.py` provides a unified way to load settings and manage the SQLite database.
 - **Containerization**: Docker and Docker Compose support allow for easy deployment of the app along with InfluxDB and Grafana.
 
 ## Key Files
-- `main.py`: The primary entry point for the application.
-- `fuel_data.py`: Logic for interacting with the NSW FuelCheck API.
-- `influxdb_writer.py`: Client logic for InfluxDB operations.
-- `web_app.py`: Flask application and route definitions for the Web UI.
-- `config_loader.py`: Handles configuration loading and validation.
-- `docker-compose.yml`: Defines the multi-container setup (App, InfluxDB, Grafana).
+- `run.py`: The primary entry point for the application.
+- `app/main.py`: Main application logic and background scheduler.
+- `app/data.py`: Logic for interacting with the NSW FuelCheck API and InfluxDB.
+- `app/web.py`: Flask application and route definitions for the Web UI.
+- `app/config.py`: Handles configuration loading and SQLite database operations.
+- `app/mqtt.py`: Home Assistant MQTT integration logic.
+- `app/notifications.py`: Discord and other notification providers.
+- `docker-compose.yml`: Defines the multi-container setup.
 - `VERSION.txt`: Contains the current semantic version of the application.
 - `CHANGELOG.md`: Tracks history of changes.
 - `unreleased.md`: Buffer for upcoming release notes.
