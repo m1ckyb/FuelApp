@@ -36,8 +36,18 @@ When a new chat session begins, I must first read the following files to establi
 This ensures all subsequent responses are informed by the full project context.
 
 ## Development Workflow
-### Continuous Documentation
-After every feature addition, change, or bug fix, `unreleased.md` must be updated immediately with a concise summary of the change under the appropriate heading (`### Added`, `### Changed`, `### Fixed`). This ensures the changelog is always ready for the next release.
+### Workflow & Changelog
+**CRITICAL**: Every time you make a change to the codebase that affects functionality, user experience, or configuration (features, bug fixes, refactoring, style updates), you MUST follow these steps:
+
+1. **Update `unreleased.md`**:
+   - **Format**: Follow the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
+   - **Categories**: Use sub-headers like `### Added`, `### Changed`, `### Fixed`, `### Removed`.
+   - **Content**: Be concise but descriptive. Explain what changed and why.
+   - **Process**: Perform the `unreleased.md` update in the same turn as the code changes.
+
+2. **Update `README.md`**:
+   - Ensure the documentation reflects any changes to features, configuration, or usage.
+   - Perform this update in the same turn as the code changes.
 
 *Note: Changes made to `GEMINI.md` itself do not need to be documented in `unreleased.md`.*
 
