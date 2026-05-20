@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-05-20
+### Added
+- **Fuel Discounts**: Ability to configure individual station fuel discounts (in cents). Discounts are applied to raw API prices before storage in InfluxDB, publication to MQTT, or display on the dashboard.
+
+### Changed
+- Pinned all dependencies in `requirements.txt` to specific versions for better reproducibility.
+- Updated `README.md` and `GEMINI.md` to accurately reflect current features and project structure.
+
 ## [0.1.1] - 2026-05-04
 ### Added
 - Implemented a robust authentication system supporting traditional Username/Password and modern Passkeys (WebAuthn).
