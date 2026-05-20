@@ -123,6 +123,7 @@ class ConfigDatabase:
                 station_id INTEGER PRIMARY KEY,
                 au_state TEXT DEFAULT 'NSW',
                 fuel_types TEXT NOT NULL,
+                discount REAL DEFAULT 0.0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -169,6 +170,13 @@ class ConfigDatabase:
         # Add au_state column if it doesn't exist (for migration)
         try:
             cursor.execute("ALTER TABLE stations ADD COLUMN au_state TEXT DEFAULT 'NSW'")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+        
+        # Add discount column if it doesn't exist (for migration)
+        try:
+            cursor.execute("ALTER TABLE stations ADD COLUMN discount REAL DEFAULT 0.0")
         except sqlite3.OperationalError:
             # Column already exists
             pass
@@ -249,24 +257,26 @@ class ConfigDatabase:
             return []
         
         cursor = self.conn.cursor()
-        cursor.execute("SELECT station_id, au_state, fuel_types FROM stations")
+        cursor.execute("SELECT station_id, au_state, fuel_types, discount FROM stations")
         
         stations = []
         for row in cursor.fetchall():
             stations.append({
                 'station_id': row['station_id'],
                 'au_state': row['au_state'] or 'NSW',
-                'fuel_types': json.loads(row['fuel_types'])
+                'fuel_types': json.loads(row['fuel_types']),
+                'discount': row['discount'] if row['discount'] is not None else 0.0
             })
         return stations
 
-    def add_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW') -> bool:
+    def add_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW', discount: float = 0.0) -> bool:
         """Add a new station.
         
         Args:
             station_id: Station ID
             fuel_types: List of fuel types
             au_state: Australian state (NSW or TAS)
+            discount: Fuel discount in cents
             
         Returns:
             True if successful, False otherwise
@@ -277,9 +287,9 @@ class ConfigDatabase:
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT INTO stations (station_id, au_state, fuel_types, created_at, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (station_id, au_state, json.dumps(fuel_types)))
+                INSERT INTO stations (station_id, au_state, fuel_types, discount, created_at, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (station_id, au_state, json.dumps(fuel_types), discount))
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
@@ -289,13 +299,14 @@ class ConfigDatabase:
             _LOGGER.error("Failed to add station %d: %s", station_id, exc)
             return False
 
-    def update_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW') -> bool:
-        """Update a station's fuel types and state.
+    def update_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW', discount: float = 0.0) -> bool:
+        """Update a station's fuel types, state, and discount.
         
         Args:
             station_id: Station ID
             fuel_types: List of fuel types
             au_state: Australian state
+            discount: Fuel discount in cents
             
         Returns:
             True if successful, False otherwise
@@ -307,9 +318,9 @@ class ConfigDatabase:
             cursor = self.conn.cursor()
             cursor.execute("""
                 UPDATE stations
-                SET fuel_types = ?, au_state = ?, updated_at = CURRENT_TIMESTAMP
+                SET fuel_types = ?, au_state = ?, discount = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE station_id = ?
-            """, (json.dumps(fuel_types), au_state, station_id))
+            """, (json.dumps(fuel_types), au_state, discount, station_id))
             self.conn.commit()
             return cursor.rowcount > 0
         except Exception as exc:
@@ -826,7 +837,8 @@ class Config:
                 self.db.add_station(
                     station['station_id'],
                     station['fuel_types'],
-                    station.get('au_state', 'NSW')
+                    station.get('au_state', 'NSW'),
+                    station.get('discount', 0.0)
                 )
             
             _LOGGER.info("Configuration migrated to database successfully")

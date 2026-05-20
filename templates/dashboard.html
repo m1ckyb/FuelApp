@@ -499,6 +499,10 @@
             }
 
             for (const station of displayData) {
+                const discountBadge = station.discount > 0 ? 
+                    `<span class="badge bg-success ms-2" style="font-size: 0.7rem;" title="Includes ${station.discount}¢ discount">Discounted</span>` : 
+                    '';
+                
                 html += `
                     <div class="col-12 mb-4">
                         <div class="card">
@@ -508,6 +512,7 @@
                                        onclick="openStationHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}')">
                                         ${escapeHtml(station.station_name)}
                                     </a>
+                                    ${discountBadge}
                                 </div>
                                 <div class="station-address">${escapeHtml(station.station_address)}</div>
                             </div>
@@ -562,6 +567,7 @@
                          station_id: station.station_id,
                          station_name: station.station_name,
                          station_address: station.station_address,
+                         discount: station.discount,
                          price: station.prices[ft],
                          trend: station.trends ? station.trends[ft] : 'unknown',
                          last_updated: station.last_updated ? station.last_updated[ft] : null
@@ -585,12 +591,16 @@
 
                 html += '<div class="row g-3">';
                 for (const item of groupData) {
+                    const discountBadge = item.discount > 0 ? 
+                        `<span class="badge bg-success ms-1" style="font-size: 0.6rem;">-${item.discount}¢</span>` : 
+                        '';
+                    
                     html += `
                         <div class="col-6 col-md-4 col-lg-3">
                             <div class="price-card h-100" style="cursor: pointer;" 
                                  onclick="openPriceHistoryModal('${item.station_id}', '${escapeHtml(item.station_name).replace(/'/g, "\\'")}', '${ft}')">
                                 <h6 class="text-white mb-1 text-truncate" title="${escapeHtml(item.station_name)}">${escapeHtml(item.station_name)}</h6>
-                                <p class="small text-secondary mb-2 text-truncate">${escapeHtml(item.station_address)}</p>
+                                <p class="small text-secondary mb-2 text-truncate">${escapeHtml(item.station_address)} ${discountBadge}</p>
                                 <div class="price-value" style="font-size: 1.5rem;">
                                     ${item.price.toFixed(1)}¢
                                     ${getTrendIcon(item.trend)}

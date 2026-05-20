@@ -93,6 +93,10 @@ class FuelApp:
             s['station_id']: s['fuel_types'] 
             for s in self.config.stations
         }
+        discounts_by_station = {
+            s['station_id']: s.get('discount', 0.0)
+            for s in self.config.stations
+        }
 
         # Filter for InfluxDB: Only write if price has changed
         updates_by_station = {}
@@ -108,11 +112,18 @@ class FuelApp:
             station_updates = []
             fuel_types = fuel_types_by_station.get(station_id, [])
             station_info = data.stations.get(station_id)
+            discount = discounts_by_station.get(station_id, 0.0)
             
             for fuel_type in fuel_types:
                 price_obj = data.prices.get((station_id, fuel_type))
                 if price_obj:
-                    current_price = float(price_obj.price)
+                    # Apply discount to current price
+                    raw_price = float(price_obj.price)
+                    current_price = raw_price - discount
+                    
+                    # Update price_obj so it's used correctly by InfluxDBWriter and MQTT
+                    price_obj.price = current_price
+                    
                     last_price = self.last_prices.get((station_id, fuel_type))
                     
                     # Check if changed (using epsilon for float)
@@ -212,6 +223,7 @@ class FuelApp:
                                 "address": station.address,
                                 "brand": station.brand,
                                 "state": station.au_state,
+                                "discount": discounts_by_station.get(station_id, 0.0),
                                 "latitude": getattr(station, 'latitude', None),
                                 "longitude": getattr(station, 'longitude', None),
                                 "last_updated": price_obj.last_updated.isoformat() if hasattr(price_obj, 'last_updated') and price_obj.last_updated else None

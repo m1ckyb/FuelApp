@@ -551,7 +551,8 @@ def get_stations():
             'station_id': sid,
             'au_state': station.get('au_state', 'NSW'),
             'station_name': station_names.get(sid, f"Station {sid}"),
-            'fuel_types': station['fuel_types']
+            'fuel_types': station['fuel_types'],
+            'discount': station.get('discount', 0.0)
         })
         
     return jsonify({'stations': result})
@@ -568,6 +569,7 @@ def add_station():
     station_id = data.get('station_id')
     fuel_types = data.get('fuel_types', [])
     au_state = data.get('au_state', 'NSW')
+    discount = float(data.get('discount', 0.0))
     
     if not station_id:
         return jsonify({'error': 'station_id is required'}), 400
@@ -586,12 +588,13 @@ def add_station():
             return jsonify({'error': 'Station already exists'}), 400
     
     # Add station to database
-    if config.db and config.db.add_station(station_id, fuel_types, au_state):
+    if config.db and config.db.add_station(station_id, fuel_types, au_state, discount):
         # Update in-memory config
         new_station = {
             'station_id': station_id,
             'au_state': au_state,
-            'fuel_types': fuel_types
+            'fuel_types': fuel_types,
+            'discount': discount
         }
         config.stations.append(new_station)
         return jsonify({'message': 'Station added successfully', 'station': new_station}), 201
@@ -624,6 +627,8 @@ def update_station(station_id):
     
     data = request.get_json()
     fuel_types = data.get('fuel_types', [])
+    au_state = data.get('au_state', 'NSW')
+    discount = float(data.get('discount', 0.0))
     
     if not fuel_types:
         return jsonify({'error': 'At least one fuel type is required'}), 400
@@ -634,12 +639,13 @@ def update_station(station_id):
         return jsonify({'error': f'Invalid fuel types: {invalid_types}'}), 400
     
     # Update in database
-    if config.db and config.db.update_station(station_id, fuel_types, au_state):
+    if config.db and config.db.update_station(station_id, fuel_types, au_state, discount):
         # Update in-memory config
         for station in config.stations:
             if station['station_id'] == station_id:
                 station['fuel_types'] = fuel_types
                 station['au_state'] = au_state
+                station['discount'] = discount
                 return jsonify({'message': 'Station updated successfully', 'station': station}), 200
         return jsonify({'error': 'Station not found in memory'}), 404
     else:
@@ -672,6 +678,10 @@ def get_current_prices():
     station_ids = [s['station_id'] for s in stations_list]
     fuel_types_by_station = {
         s['station_id']: s['fuel_types'] 
+        for s in stations_list
+    }
+    discounts_by_station = {
+        s['station_id']: s.get('discount', 0.0)
         for s in stations_list
     }
     
@@ -726,11 +736,13 @@ def get_current_prices():
         prices = {}
         last_updated = {}
         trends = {}
+        discount = discounts_by_station.get(station_id, 0.0)
         
         for fuel_type in fuel_types:
             price_obj = data.prices.get((station_id, fuel_type))
             if price_obj is not None:
-                price_val = price_obj.price
+                # Apply discount to price
+                price_val = price_obj.price - discount
                 prices[fuel_type] = price_val
                 
                 if hasattr(price_obj, 'last_updated') and price_obj.last_updated:
@@ -763,6 +775,7 @@ def get_current_prices():
             'station_id': station_id,
             'station_name': station.name,
             'station_address': station.address,
+            'discount': discount,
             'prices': prices,
             'last_updated': last_updated,
             'trends': trends
