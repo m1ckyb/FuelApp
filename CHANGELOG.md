@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-05-20
+### Changed
+- Reorganized the Settings page layout: Moved Discord and InfluxDB configuration to the second column for better balance.
+
 ## [0.1.2] - 2026-05-20
 ### Added
 - **Fuel Discounts**: Ability to configure individual station fuel discounts (in cents). Discounts are applied to raw API prices before storage in InfluxDB, publication to MQTT, or display on the dashboard.
