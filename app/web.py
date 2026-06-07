@@ -152,6 +152,8 @@ def init_app(config_obj: Config):
             except Exception:
                 _LOGGER.warning("Could not persist Flask secret key to file")
     app.config['SECRET_KEY'] = secret_key
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
+    # app.config['SESSION_COOKIE_SECURE'] = True # Uncomment in production if behind HTTPS
 
     # Ensure backup directory exists
     backup_dir = Path(config.data_dir) / 'backups'
@@ -1400,7 +1402,13 @@ def restore_backup():
         file.save(zip_path)
         
         with zipfile.ZipFile(zip_path, 'r') as zipf:
-            zipf.extractall(temp_dir)
+            for member in zipf.namelist():
+                # Prevent Zip Slip by ensuring the target path is within temp_dir
+                target_path = (temp_dir / member).resolve()
+                if not str(target_path).startswith(str(temp_dir.resolve())):
+                    _LOGGER.error("Zip Slip vulnerability detected: %s", member)
+                    return jsonify({'error': 'Invalid archive: contains unsafe paths'}), 400
+                zipf.extract(member, temp_dir)
             
         # Run influx restore command
         # Note: Restore usually requires writing to a new bucket if the old one exists
