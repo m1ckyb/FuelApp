@@ -1,5 +1,5 @@
 # --- Builder Stage ---
-FROM python:3.12-alpine AS builder
+FROM python:3.14-alpine AS builder
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 
 # --- Runner Stage ---
-FROM python:3.12-alpine
+FROM python:3.14-alpine
 
 WORKDIR /app
 
