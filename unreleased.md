@@ -1,4 +1,5 @@
 ### Added
+- **CI/CD**: Added Dependabot configuration to automatically update dependencies for Python (`pip`), Docker, and GitHub Actions.
 
 ### Changed
 - **Security**: Updated `aiohttp` to `3.14.0` in `requirements.txt` to mitigate known CVEs (CVE-2026-34993, CVE-2026-47265).
