@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-06-27
+### Added
+- **CI/CD**: Added Dependabot configuration to automatically update dependencies for Python (`pip`), Docker, and GitHub Actions.
+- **Security**: Added rate limiting on login, setup, and WebAuthn endpoints to mitigate brute-force attacks (`app/web.py`).
+- **Security**: Added security hardening headers (`X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`) to all HTTP responses (`app/web.py`).
+- **Security**: Added password strength enforcement requiring a minimum of 8 characters for new passwords (`app/web.py`).
+- **Security**: Enabled `SESSION_COOKIE_HTTPONLY` and conditional `SESSION_COOKIE_SECURE` behind `FORCE_HTTPS`/`REVERSE_PROXY` env vars (`app/web.py`).
+- **Security**: Dockerfile now runs the application as a non-root `fuelapp` user (`Dockerfile`).
+
+### Changed
+- **Security**: Updated `aiohttp` to `3.14.0` in `requirements.txt` to mitigate known CVEs (CVE-2026-34993, CVE-2026-47265).
+- **Security**: Hardened Flask session cookies by setting `SESSION_COOKIE_SAMESITE = 'Strict'` for better CSRF protection.
+- **Security**: Switched InfluxDB backup/restore from CLI `--token` argument to `INFLUX_TOKEN` environment variable to prevent secret leakage via process listings (`app/web.py`).
+- **Security**: Validated `station_id` query parameter in the price history API to prevent Flux query injection (`app/web.py`).
+- **Security**: Restrictive file permissions (`0o600`) set on SQLite database and Flask secret key files (`app/config.py`, `app/web.py`).
+- **Security**: Improved backup filename validation using `Path.resolve()` to prevent directory traversal (`app/web.py`).
+- **Security**: Session is now cleared before login to prevent session fixation attacks (`app/web.py`).
+- **Security**: Removed application version number from `/api/config` response to reduce information disclosure (`app/web.py`).
+- **Security**: Removed internal exception details from API error responses (`app/web.py`).
+- **Database**: Enabled SQLite WAL journal mode and 5-second busy timeout for better concurrent access across Gunicorn workers (`app/config.py`).
+- **Configuration**: Kept default Docker Compose environment using `my-super-secret-auth-token` as the InfluxDB authentication token to align with restored database snapshot parameters.
+- **API**: Added `Cache-Control` headers to prevent browser-side caching of `/api/` endpoints, ensuring users always see live data when loading or refreshing the dashboard.
+
+### Fixed
+- **Security**: Fixed a "Zip Slip" directory traversal vulnerability in the backup restore functionality (`app/web.py`) by explicitly validating paths of files within user-uploaded archives.
+- **Database**: Fixed a bug in background scheduler where new stations or fresh database environments did not write baseline prices to InfluxDB due to skipping writes when no previous price exists.
+
 ## [0.1.3] - 2026-05-20
 ### Changed
 - Reorganized the Settings page layout: Moved Discord and InfluxDB configuration to the second column for better balance.
