@@ -57,8 +57,15 @@ COPY scripts/ ./scripts/
 # Create config directory
 RUN mkdir -p /app/config
 
+# Create non-root user and set ownership
+RUN addgroup -S fuelapp && adduser -S fuelapp -G fuelapp && \
+    chown -R fuelapp:fuelapp /app
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
+
+# Switch to non-root user
+USER fuelapp
 
 # Expose port for web UI
 EXPOSE 5000

@@ -47,6 +47,20 @@ from .notifications import DiscordClient
 
 _LOGGER = logging.getLogger(__name__)
 
+# Simple in-memory rate limiter (best-effort; resets per process)
+_login_attempts: Dict[str, list[float]] = {}
+
+def _check_rate_limit(key: str, max_attempts: int = 5, window_seconds: int = 60) -> bool:
+    """Check if a rate limit has been exceeded. Returns True if allowed."""
+    now = time.time()
+    attempts = _login_attempts.setdefault(key, [])
+    # Remove expired entries
+    attempts[:] = [t for t in attempts if now - t < window_seconds]
+    if len(attempts) >= max_attempts:
+        return False
+    attempts.append(now)
+    return True
+
 # Log WebAuthn version for debugging
 try:
     import webauthn
@@ -91,10 +105,25 @@ def unauthorized():
 @app.errorhandler(500)
 def handle_500(error):
     """Handle 500 errors with JSON for API requests."""
-    _LOGGER.error("Unhandled Exception: %s", error)
+    _LOGGER.exception("Unhandled Exception")
     if request.path.startswith('/api/'):
-        return jsonify({'error': 'Internal Server Error', 'message': str(error)}), 500
+        return jsonify({'error': 'Internal Server Error'}), 500
     return "Internal Server Error", 500
+
+
+@app.after_request
+def add_headers(response):
+    """Add security and cache-control headers to all responses."""
+    # Security headers
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    # Cache control for API endpoints
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
 
 
 def create_app():
@@ -149,11 +178,14 @@ def init_app(config_obj: Config):
             try:
                 with open(secret_file, 'w') as f:
                     f.write(secret_key)
+                os.chmod(secret_file, 0o600)
             except Exception:
                 _LOGGER.warning("Could not persist Flask secret key to file")
     app.config['SECRET_KEY'] = secret_key
     app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
-    # app.config['SESSION_COOKIE_SECURE'] = True # Uncomment in production if behind HTTPS
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    if os.environ.get('FORCE_HTTPS') or os.environ.get('REVERSE_PROXY'):
+        app.config['SESSION_COOKIE_SECURE'] = True
 
     # Ensure backup directory exists
     backup_dir = Path(config.data_dir) / 'backups'
@@ -211,6 +243,11 @@ def setup():
         return redirect(url_for('login'))
         
     if request.method == 'POST':
+        # Rate limit setup attempts by IP
+        ip = request.remote_addr or 'unknown'
+        if not _check_rate_limit(f'setup:ip:{ip}', max_attempts=3, window_seconds=300):
+            return render_template('setup.html', error="Too many setup attempts. Please try again later.")
+        
         username = request.form.get('username')
         password = request.form.get('password')
         confirm_password = request.form.get('confirm_password')
@@ -220,6 +257,9 @@ def setup():
             
         if password != confirm_password:
             return render_template('setup.html', error="Passwords do not match")
+            
+        if len(password) < 8:
+            return render_template('setup.html', error="Password must be at least 8 characters long")
             
         password_hash = generate_password_hash(password)
         user_id = config.db.create_user(username, password_hash)
@@ -241,12 +281,21 @@ def login():
         return redirect(url_for('index'))
         
     if request.method == 'POST':
-        username = request.form.get('username')
+        username = request.form.get('username', '')
+        
+        # Rate limit by username AND IP
+        ip = request.remote_addr or 'unknown'
+        if not _check_rate_limit(f'login:{ip}:{username}', max_attempts=5, window_seconds=60):
+            return render_template('login.html', error="Too many login attempts. Please try again later.")
+        if not _check_rate_limit(f'login:ip:{ip}', max_attempts=20, window_seconds=60):
+            return render_template('login.html', error="Too many login attempts. Please try again later.")
+        
         password = request.form.get('password')
         
         user_data = config.db.get_user_by_username(username)
         if user_data and check_password_hash(user_data['password_hash'], password):
             user = User(user_data['id'], user_data['username'])
+            session.clear()
             login_user(user, remember=True)
             return redirect(url_for('index'))
             
@@ -337,6 +386,11 @@ def webauthn_register_complete():
 @app.route('/api/webauthn/login/begin', methods=['POST'])
 def webauthn_login_begin():
     """Start WebAuthn login process."""
+    # Rate limit by IP
+    ip = request.remote_addr or 'unknown'
+    if not _check_rate_limit(f'webauthn_begin:ip:{ip}', max_attempts=10, window_seconds=60):
+        return jsonify({'error': 'Too many requests. Please try again later.'}), 429
+        
     if not config or not config.db:
         return jsonify({'error': 'Database not initialized'}), 500
         
@@ -443,6 +497,9 @@ def update_password():
     
     if not current_password or not new_password:
         return jsonify({'error': 'Missing password data'}), 400
+        
+    if len(new_password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters long'}), 400
         
     user_data = config.db.get_user(current_user.id)
     if not user_data or not check_password_hash(user_data['password_hash'], current_password):
@@ -797,9 +854,17 @@ def get_price_history():
         return jsonify({'error': 'Configuration not loaded'}), 500
     
     # Get query parameters
-    station_id = request.args.get('station_id')
+    station_id_s = request.args.get('station_id')
     fuel_type = request.args.get('fuel_type')
     days = request.args.get('days', default=7, type=int)
+    
+    # Validate station_id if provided
+    station_id = None
+    if station_id_s:
+        try:
+            station_id = int(station_id_s)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid station_id'}), 400
     
     # Validate fuel_type if provided
     if fuel_type and fuel_type not in ALLOWED_FUEL_TYPES:
@@ -819,16 +884,18 @@ def get_price_history():
         query_api = client.query_api()
         
         # Build Flux query
-        # Start with base query
-        query = f'from(bucket: "{config.influxdb_bucket}") |> range(start: -{days}d)'
-        query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
+        filters = []
+        filters.append(f'r._measurement == "fuel_price"')
         
-        if station_id:
-            query += f' |> filter(fn: (r) => r.station_id == "{station_id}")'
+        if station_id is not None:
+            filters.append(f'r.station_id == "{station_id}"')
         
         if fuel_type:
-            query += f' |> filter(fn: (r) => r.fuel_type == "{fuel_type}")'
+            filters.append(f'r.fuel_type == "{fuel_type}"')
             
+        filter_expr = ' and '.join(filters)
+        query = f'from(bucket: "{config.influxdb_bucket}") |> range(start: -{days}d)'
+        query += f' |> filter(fn: (r) => {filter_expr})'
         query += ' |> filter(fn: (r) => r._field == "price")'
         query += ' |> sort(columns: ["_time"])'
         
@@ -987,8 +1054,7 @@ def get_config():
         'log_level': config.log_level,
         'auth_enabled': config.auth_enabled,
         'webauthn_rp_id': config.webauthn_rp_id,
-        'webauthn_rp_name': config.webauthn_rp_name,
-        'version': config.version
+        'webauthn_rp_name': config.webauthn_rp_name
     })
 
 
@@ -1289,7 +1355,7 @@ cards:
         
     except Exception as e:
         _LOGGER.exception("Unexpected error in generate_ha_card")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Failed to generate HA card'}), 500
 
 
 @app.route('/api/backup', methods=['POST'])
@@ -1306,17 +1372,18 @@ def create_backup():
         
         _LOGGER.info("Starting InfluxDB backup to %s", backup_dir)
         
-        # Run influx backup command
+        # Run influx backup command using env var instead of CLI arg to avoid process listing leak
+        env = os.environ.copy()
+        env['INFLUX_TOKEN'] = config.influxdb_token
         cmd = [
             "influx", "backup",
             str(backup_dir),
             "--host", config.influxdb_url,
-            "--token", config.influxdb_token,
             "--org", config.influxdb_org,
             "--bucket", config.influxdb_bucket
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         
         if result.returncode != 0:
             _LOGGER.error("Backup failed (code %d): %s\nStdout: %s", result.returncode, result.stderr, result.stdout)
@@ -1349,7 +1416,7 @@ def create_backup():
         
     except Exception as exc:
         _LOGGER.error("Backup exception: %s", exc)
-        return jsonify({'error': str(exc)}), 500
+        return jsonify({'error': 'Backup failed'}), 500
 
 
 @app.route('/api/backup/download/<filename>', methods=['GET'])
@@ -1357,10 +1424,13 @@ def create_backup():
 def download_backup(filename):
     """Download a previously created backup file."""
     # Security check: only allow files in the backups directory and with .zip extension
-    if '..' in filename or not filename.endswith('.zip'):
+    if not filename.endswith('.zip'):
         return jsonify({'error': 'Invalid filename'}), 400
-        
-    zip_path = Path(config.data_dir) / 'backups' / filename
+    
+    backup_dir = (Path(config.data_dir) / 'backups').resolve()
+    zip_path = (backup_dir / filename).resolve()
+    if not str(zip_path).startswith(str(backup_dir)):
+        return jsonify({'error': 'Invalid filename'}), 400
     if not zip_path.exists():
         return jsonify({'error': 'Backup file not found'}), 404
         
@@ -1418,16 +1488,17 @@ def restore_backup():
         # But 'influx restore' creates new buckets if they don't exist.
         # If the bucket exists, it might conflict. 
         
-        # Basic restore command
+        # Basic restore command using env var instead of CLI arg
+        env = os.environ.copy()
+        env['INFLUX_TOKEN'] = config.influxdb_token
         cmd = [
             "influx", "restore",
             str(temp_dir),
             "--host", config.influxdb_url,
-            "--token", config.influxdb_token,
-            "--full" # Trying full restore for now, implies admin token usage
+            "--full"
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         
         if result.returncode != 0:
             # If full restore fails, try specific bucket restore? 

@@ -1,0 +1,1 @@
+Please first read `GEMINI.md` (this file) for architectural principles and workflows before responding. It contains critical instructions about session initialization, development workflow, changelog management, and the release process.

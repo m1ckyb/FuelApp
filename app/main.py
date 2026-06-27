@@ -126,34 +126,32 @@ class FuelApp:
                     
                     last_price = self.last_prices.get((station_id, fuel_type))
                     
-                    # Check if changed (using epsilon for float)
-                    if last_price is not None and abs(current_price - last_price) > 0.001:
+                    # Check if changed (using epsilon for float) or if it is the first time we see it
+                    if last_price is None or abs(current_price - last_price) > 0.001:
                         station_updates.append(fuel_type)
                         
-                        # Check for price increase alerts
-                        increase = current_price - last_price
-                        
-                        # Priority: 
-                        # 1. Explicit alert threshold
-                        # 2. Global threshold (if no explicit alert, webhook is set, and global threshold > 0)
-                        threshold = alert_map.get((station_id, fuel_type))
-                        if threshold is None and self.config.discord_webhook_url:
-                            if self.config.discord_price_threshold > 0:
-                                # If no specific alert, use global threshold as fallback (if enabled)
-                                threshold = self.config.discord_price_threshold
-                        
-                        if threshold is not None and increase >= threshold:
-                            price_alerts_triggered.append({
-                                'station_name': station_info.name if station_info else f"Station {station_id}",
-                                'fuel_type': fuel_type,
-                                'old_price': last_price,
-                                'new_price': current_price,
-                                'increase': increase
-                            })
+                        # Check for price increase alerts (only if we have a previous price to compare with)
+                        if last_price is not None:
+                            increase = current_price - last_price
                             
-                        self.last_prices[(station_id, fuel_type)] = current_price
-                    elif last_price is None:
-                        # Initial fetch for this station/fuel
+                            # Priority: 
+                            # 1. Explicit alert threshold
+                            # 2. Global threshold (if no explicit alert, webhook is set, and global threshold > 0)
+                            threshold = alert_map.get((station_id, fuel_type))
+                            if threshold is None and self.config.discord_webhook_url:
+                                if self.config.discord_price_threshold > 0:
+                                    # If no specific alert, use global threshold as fallback (if enabled)
+                                    threshold = self.config.discord_price_threshold
+                            
+                            if threshold is not None and increase >= threshold:
+                                price_alerts_triggered.append({
+                                    'station_name': station_info.name if station_info else f"Station {station_id}",
+                                    'fuel_type': fuel_type,
+                                    'old_price': last_price,
+                                    'new_price': current_price,
+                                    'increase': increase
+                                })
+                            
                         self.last_prices[(station_id, fuel_type)] = current_price
             
             if station_updates:

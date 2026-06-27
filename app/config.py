@@ -79,10 +79,9 @@ class ConfigDatabase:
     def connect(self) -> bool:
         """Connect to the database and initialize schema if needed.
         
-        Note: Uses check_same_thread=False for Flask compatibility.
-        The Flask app runs in a single-threaded development server by default.
-        For production use with multi-threading, consider using a connection pool
-        or implementing proper thread synchronization.
+        Uses WAL mode for better concurrent read/write performance across
+        Gunicorn worker processes, and a busy timeout to avoid 'database is
+        locked' errors during contention.
         
         Returns:
             True if connection successful, False otherwise
@@ -90,7 +89,14 @@ class ConfigDatabase:
         try:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA busy_timeout=5000")
             self._init_schema()
+            # Restrict database file permissions to owner-only
+            try:
+                os.chmod(self.db_path, 0o600)
+            except Exception:
+                pass
             return True
         except Exception as exc:
             _LOGGER.error("Failed to connect to database: %s", exc)
