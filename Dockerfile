@@ -57,8 +57,8 @@ COPY scripts/ ./scripts/
 # Create config directory
 RUN mkdir -p /app/config
 
-# Create non-root user and set ownership
-RUN addgroup -S fuelapp && adduser -S fuelapp -G fuelapp && \
+# Create non-root user (UID 1000 to match host user) and set ownership
+RUN addgroup -S fuelapp && adduser -S fuelapp -G fuelapp -u 1000 && \
     chown -R fuelapp:fuelapp /app
 
 # Set environment variables

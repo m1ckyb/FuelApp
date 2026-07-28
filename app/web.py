@@ -1054,7 +1054,8 @@ def get_config():
         'log_level': config.log_level,
         'auth_enabled': config.auth_enabled,
         'webauthn_rp_id': config.webauthn_rp_id,
-        'webauthn_rp_name': config.webauthn_rp_name
+        'webauthn_rp_name': config.webauthn_rp_name,
+        'version': config.version
     })
 
 
