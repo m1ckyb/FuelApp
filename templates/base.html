@@ -328,6 +328,26 @@
     
     <!-- Common JavaScript -->
     <script>
+        // CSRF Token Injection for all fetch AJAX requests (non-GET)
+        const csrfToken = "{{ csrf_token() if csrf_token is defined else '' }}";
+        if (csrfToken) {
+            const originalFetch = window.fetch;
+            window.fetch = function(url, options = {}) {
+                if (!options.headers) {
+                    options.headers = {};
+                }
+                const method = (options.method || 'GET').toUpperCase();
+                if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+                    if (typeof Headers !== 'undefined' && options.headers instanceof Headers) {
+                        options.headers.set('X-CSRFToken', csrfToken);
+                    } else {
+                        options.headers['X-CSRFToken'] = csrfToken;
+                    }
+                }
+                return originalFetch(url, options);
+            };
+        }
+
         // Toast notifications
         function showToast(message, type = 'success') {
             const alertClass = type === 'success' ? 'alert-success' : 'alert-danger';

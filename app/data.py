@@ -42,7 +42,8 @@ class FuelDataFetcher:
         """
         
         async def _fetch():
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 client = NSWFuelApiClient(
                     session=session,
                     client_id=self.client_id,

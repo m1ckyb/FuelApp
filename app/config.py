@@ -7,7 +7,9 @@ import logging
 import os
 import sqlite3
 import sys
+import threading
 import yaml
+
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -74,7 +76,18 @@ class ConfigDatabase:
             db_path: Path to the SQLite database file
         """
         self.db_path = db_path
-        self.conn: Optional[sqlite3.Connection] = None
+        self._local = threading.local()
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """Get the thread-local database connection, establishing it if necessary."""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            self._local.conn = conn
+        return self._local.conn
 
     def connect(self) -> bool:
         """Connect to the database and initialize schema if needed.
@@ -87,10 +100,7 @@ class ConfigDatabase:
             True if connection successful, False otherwise
         """
         try:
-            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self.conn.row_factory = sqlite3.Row
-            self.conn.execute("PRAGMA journal_mode=WAL")
-            self.conn.execute("PRAGMA busy_timeout=5000")
+            _ = self.conn
             self._init_schema()
             # Restrict database file permissions to owner-only
             try:
@@ -101,6 +111,7 @@ class ConfigDatabase:
         except Exception as exc:
             _LOGGER.error("Failed to connect to database: %s", exc)
             return False
+
 
     def _init_schema(self):
         """Initialize database schema if it doesn't exist."""
@@ -172,6 +183,16 @@ class ConfigDatabase:
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
             )
         """)
+        
+        # Create login_attempts table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                key TEXT PRIMARY KEY,
+                attempts TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         
         # Add au_state column if it doesn't exist (for migration)
         try:
@@ -426,6 +447,58 @@ class ConfigDatabase:
             _LOGGER.error("Failed to toggle alert %d: %s", alert_id, exc)
             return False
 
+    def check_rate_limit(self, key: str, max_attempts: int = 5, window_seconds: int = 60) -> bool:
+        """Check and update a rate limit entry in the SQLite database.
+        
+        Returns:
+            True if within limits, False if rate limit exceeded.
+        """
+        import time
+        if not self.conn:
+            return True
+            
+        now = time.time()
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT attempts FROM login_attempts WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            
+            attempts = []
+            if row:
+                try:
+                    attempts = json.loads(row['attempts'])
+                except Exception:
+                    pass
+            
+            # Filter attempts to only keep those within the window
+            attempts = [t for t in attempts if now - t < window_seconds]
+            
+            if len(attempts) >= max_attempts:
+                # Still write the filtered list to clean up expired entries
+                cursor.execute("""
+                    INSERT INTO login_attempts (key, attempts, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET
+                        attempts = excluded.attempts,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (key, json.dumps(attempts)))
+                self.conn.commit()
+                return False
+                
+            attempts.append(now)
+            cursor.execute("""
+                INSERT INTO login_attempts (key, attempts, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    attempts = excluded.attempts,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (key, json.dumps(attempts)))
+            self.conn.commit()
+            return True
+        except Exception as exc:
+            _LOGGER.error("Failed to check rate limit in DB for %s: %s", key, exc)
+            return True  # Fail-safe to avoid blocking users on DB failure
+
     # --- User Management ---
 
     def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
@@ -565,10 +638,11 @@ class ConfigDatabase:
             return False
 
     def close(self):
-        """Close database connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        """Close database connection for the current thread."""
+        if hasattr(self._local, 'conn') and self._local.conn is not None:
+            self._local.conn.close()
+            self._local.conn = None
+
 
 
 # --- Configuration Loader ---

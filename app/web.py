@@ -47,19 +47,12 @@ from .notifications import DiscordClient
 
 _LOGGER = logging.getLogger(__name__)
 
-# Simple in-memory rate limiter (best-effort; resets per process)
-_login_attempts: Dict[str, list[float]] = {}
-
 def _check_rate_limit(key: str, max_attempts: int = 5, window_seconds: int = 60) -> bool:
     """Check if a rate limit has been exceeded. Returns True if allowed."""
-    now = time.time()
-    attempts = _login_attempts.setdefault(key, [])
-    # Remove expired entries
-    attempts[:] = [t for t in attempts if now - t < window_seconds]
-    if len(attempts) >= max_attempts:
-        return False
-    attempts.append(now)
+    if config and config.db:
+        return config.db.check_rate_limit(key, max_attempts, window_seconds)
     return True
+
 
 # Log WebAuthn version for debugging
 try:
@@ -68,10 +61,14 @@ try:
 except ImportError:
     _LOGGER.warning("WebAuthn library not found")
 
+from flask_wtf.csrf import CSRFProtect
+
 app = Flask(__name__, template_folder='../templates')
+csrf = CSRFProtect(app)
 login_manager = LoginManager()
 login_manager.login_view = "login"
 login_manager.login_message_category = "info"
+
 
 # Global config instance
 config: Optional[Config] = None
@@ -170,17 +167,32 @@ def init_app(config_obj: Config):
     secret_key = os.environ.get('FLASK_SECRET_KEY')
     if not secret_key:
         secret_file = Path(config.data_dir) / '.flask_secret'
-        if secret_file.exists():
-            with open(secret_file, 'r') as f:
-                secret_key = f.read().strip()
-        else:
-            secret_key = secrets.token_hex(32)
-            try:
-                with open(secret_file, 'w') as f:
+        try:
+            import fcntl
+            # Open or create the file with lock
+            with open(secret_file, 'a+') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                f.seek(0)
+                content = f.read().strip()
+                if content:
+                    secret_key = content
+                else:
+                    secret_key = secrets.token_hex(32)
                     f.write(secret_key)
-                os.chmod(secret_file, 0o600)
-            except Exception:
-                _LOGGER.warning("Could not persist Flask secret key to file")
+                    try:
+                        os.chmod(secret_file, 0o600)
+                    except Exception:
+                        pass
+        except Exception as e:
+            _LOGGER.warning("Error with file locking for Flask secret: %s. Using fallback.", e)
+            if secret_file.exists():
+                try:
+                    with open(secret_file, 'r') as f:
+                        secret_key = f.read().strip()
+                except Exception:
+                    pass
+            if not secret_key:
+                secret_key = secrets.token_hex(32)
     app.config['SECRET_KEY'] = secret_key
     app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
     app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -642,9 +654,13 @@ def add_station():
         return jsonify({'error': f'Invalid fuel types: {invalid_types}'}), 400
     
     # Check if station already exists
-    for station in config.stations:
+    stations_list = config.stations
+    if config.db:
+        stations_list = config.db.get_stations()
+    for station in stations_list:
         if station['station_id'] == station_id:
             return jsonify({'error': 'Station already exists'}), 400
+
     
     # Add station to database
     if config.db and config.db.add_station(station_id, fuel_types, au_state, discount):
@@ -729,9 +745,86 @@ def get_current_prices():
         except Exception as e:
             _LOGGER.error("Failed to fetch stations from DB: %s", e)
 
-    data = ftr.fetch_station_price_data(stations_list)
-    if not data:
-        return jsonify({'error': 'Failed to fetch fuel prices'}), 500
+    # Decouple web UI from live API by reading current prices from InfluxDB first
+    class MockStation:
+        def __init__(self, code, name, address, au_state='NSW'):
+            self.code = code
+            self.name = name
+            self.address = address
+            self.au_state = au_state
+
+    class MockPrice:
+        def __init__(self, station_code, fuel_type, price, last_updated):
+            self.station_code = station_code
+            self.fuel_type = fuel_type
+            self.price = price
+            self.last_updated = last_updated
+
+    class MockStationPriceData:
+        def __init__(self):
+            self.stations = {}
+            self.prices = {}
+
+    data = MockStationPriceData()
+    discounts_by_station = {
+        s['station_id']: s.get('discount', 0.0)
+        for s in stations_list
+    }
+
+    if cfg:
+        try:
+            client = InfluxDBClient(
+                url=cfg.influxdb_url,
+                token=cfg.influxdb_token,
+                org=cfg.influxdb_org
+            )
+            query_api = client.query_api()
+            
+            # Query last recorded price for each series in the last 30 days
+            query = f'from(bucket: "{cfg.influxdb_bucket}")'
+            query += ' |> range(start: -30d)'
+            query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
+            query += ' |> filter(fn: (r) => r._field == "price")'
+            query += ' |> last()'
+            
+            tables = query_api.query(query)
+            
+            for table in tables:
+                for record in table.records:
+                    sid = record.values.get('station_id')
+                    ft = record.values.get('fuel_type')
+                    price = record.get_value()
+                    sname = record.values.get('station_name') or f"Station {sid}"
+                    saddr = record.values.get('station_address') or ""
+                    
+                    if sid and ft:
+                        try:
+                            sid = int(sid)
+                            if sid not in data.stations:
+                                au_state = 'NSW'
+                                for s in stations_list:
+                                    if s['station_id'] == sid:
+                                        au_state = s.get('au_state', 'NSW')
+                                        break
+                                data.stations[sid] = MockStation(sid, sname, saddr, au_state)
+                            
+                            # InfluxDB stores discounted price; reconstruct raw price for downstream
+                            discount = discounts_by_station.get(sid, 0.0)
+                            raw_price = price + discount
+                            data.prices[(sid, ft)] = MockPrice(sid, ft, raw_price, record.get_time())
+                        except ValueError:
+                            pass
+            client.close()
+        except Exception as e:
+            _LOGGER.error("Failed to query InfluxDB for current prices: %s", e)
+
+    # Fallback to live API only if InfluxDB has no cached data (e.g. fresh installation)
+    if not data.prices:
+        _LOGGER.warning("No price data in InfluxDB, falling back to live API fetch")
+        data = ftr.fetch_station_price_data(stations_list)
+        if not data:
+            return jsonify({'error': 'Failed to fetch fuel prices'}), 500
+
     
     # Filter for configured stations
     station_ids = [s['station_id'] for s in stations_list]
@@ -1021,8 +1114,10 @@ def get_fuel_types():
 @login_required
 def get_config():
     """Get current configuration."""
-    if not config:
+    cfg, _ = refresh_config_and_fetcher()
+    if not cfg:
         return jsonify({'error': 'Configuration not loaded'}), 500
+
     
     # Parse URL to hide sensitive parts
     from urllib.parse import urlparse
@@ -1168,12 +1263,14 @@ def update_config():
 @login_required
 def test_discord_config():
     """Test Discord notification configuration."""
+    cfg, _ = refresh_config_and_fetcher()
     data = request.get_json()
     webhook_url = data.get('discord_webhook_url')
     
     # Fallback to stored webhook URL if not provided
-    if not webhook_url and config and config.discord_webhook_url:
-        webhook_url = config.discord_webhook_url
+    if not webhook_url and cfg and cfg.discord_webhook_url:
+        webhook_url = cfg.discord_webhook_url
+
 
     if not webhook_url:
         return jsonify({'error': 'Webhook URL is required'}), 400
@@ -1194,6 +1291,7 @@ def test_discord_config():
 @login_required
 def test_mqtt_config():
     """Test MQTT configuration."""
+    cfg, _ = refresh_config_and_fetcher()
     data = request.get_json()
     
     broker = data.get('mqtt_broker')
@@ -1203,8 +1301,8 @@ def test_mqtt_config():
     
     # Fallback to stored password if not provided and user matches (or is new)
     # This handles the "leave blank to keep current" UI logic
-    if not password and config and config.mqtt_password:
-        password = config.mqtt_password
+    if not password and cfg and cfg.mqtt_password:
+        password = cfg.mqtt_password
 
     if not broker:
         return jsonify({'error': 'Broker address is required'}), 400
@@ -1235,9 +1333,11 @@ def ha_slugify(text):
 def generate_ha_card():
     """Generate Home Assistant Lovelace card configuration."""
     try:
-        if not config:
+        cfg, ftr = refresh_config_and_fetcher()
+        if not cfg:
             _LOGGER.error("Configuration not loaded in generate_ha_card")
             return jsonify({'error': 'Configuration not loaded'}), 500
+
             
         data = request.get_json()
         if not data:
@@ -1248,10 +1348,10 @@ def generate_ha_card():
         _LOGGER.info("Generating HA card for fuel type: %s", fuel_type)
         
         # Get all stations that support this fuel type
-        stations_list = config.stations
-        if config.db:
+        stations_list = cfg.stations
+        if cfg.db:
             try:
-                db_stations = config.db.get_stations()
+                db_stations = cfg.db.get_stations()
                 if db_stations is not None:
                     stations_list = db_stations
             except Exception as e:
@@ -1261,10 +1361,10 @@ def generate_ha_card():
 
         # Try to fetch station details to get names
         station_names = {}
-        if fetcher:
+        if ftr:
             try:
                 _LOGGER.info("Fetching station data for names...")
-                station_data = fetcher.fetch_station_price_data(stations_list)
+                station_data = ftr.fetch_station_price_data(stations_list)
                 if station_data and station_data.stations:
                     for s in station_data.stations.values():
                         station_names[s.code] = s.name
