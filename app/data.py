@@ -305,3 +305,29 @@ class InfluxDBWriter:
         except Exception as exc:
             _LOGGER.error("Failed to write data to InfluxDB: %s", exc)
             return False
+
+    def write_average_prices(self, averages: dict[str, float]) -> bool:
+        """Write average fuel prices to InfluxDB as a virtual station (ID 0)."""
+        if not self.client or not self.write_api or not averages:
+            return False
+            
+        try:
+            points = []
+            timestamp = datetime.now(timezone.utc)
+            for fuel_type, avg_price in averages.items():
+                point = (
+                    Point("fuel_price")
+                    .tag("station_id", "0")
+                    .tag("station_name", "Average Prices")
+                    .tag("station_address", "Global")
+                    .tag("fuel_type", fuel_type)
+                    .field("price", float(avg_price))
+                    .time(timestamp)
+                )
+                points.append(point)
+                
+            self.write_api.write(bucket=self.bucket, record=points)
+            return True
+        except Exception as exc:
+            _LOGGER.error("Failed to write average prices to InfluxDB: %s", exc)
+            return False

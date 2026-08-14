@@ -41,6 +41,9 @@
         </div>
     </div>
     
+    <!-- Average Prices -->
+    <div class="row mb-4" id="averagePricesContainer" style="display: none;"></div>
+    
     <!-- Current Prices -->
     <div class="row" id="pricesContainer">
         <div class="col-12 text-center py-5">
@@ -412,7 +415,8 @@
             }
             
             stationsData = data.prices;
-            displayPrices(data.prices);
+            const averageTrends = data.average_trends || {};
+            displayPrices(data.prices, averageTrends);
             populateChartFilters(data.prices);
             
             if (data.fetched_at) {
@@ -469,8 +473,9 @@
         return Math.min(...prices);
     }
     
-    function displayPrices(prices) {
+    function displayPrices(prices, averageTrends = {}) {
         const container = document.getElementById('pricesContainer');
+        const avgContainer = document.getElementById('averagePricesContainer');
         
         if (prices.length === 0) {
             container.innerHTML = `
@@ -481,7 +486,64 @@
                     </div>
                 </div>
             `;
+            avgContainer.style.display = 'none';
             return;
+        }
+        
+        // Calculate average prices
+        const avgPrices = {};
+        const avgCounts = {};
+        
+        prices.forEach(station => {
+            Object.keys(station.prices).forEach(ft => {
+                if (!avgPrices[ft]) {
+                    avgPrices[ft] = 0;
+                    avgCounts[ft] = 0;
+                }
+                avgPrices[ft] += station.prices[ft];
+                avgCounts[ft] += 1;
+            });
+        });
+
+        if (Object.keys(avgPrices).length > 0) {
+            let avgHtml = `
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <a href="javascript:void(0)" class="text-decoration-none text-white" 
+                               onclick="openStationHistoryModal('0', 'Average Prices')">
+                                <i class="bi bi-calculator"></i> Average Prices
+                            </a>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+            `;
+            const sortedFt = Object.keys(avgPrices).sort();
+            for (const ft of sortedFt) {
+                const avg = (avgPrices[ft] / avgCounts[ft]).toFixed(1);
+                const trend = averageTrends[ft] || 'unknown';
+                avgHtml += `
+                    <div class="col-6 col-sm-4 col-md flex-grow-1" style="min-width: 140px;">
+                        <div class="price-card h-100" style="cursor: pointer; transition: transform 0.2s;" 
+                             onclick="openPriceHistoryModal('0', 'Average Prices', '${escapeHtml(ft)}')"
+                             onmouseover="this.style.transform='scale(1.05)'" 
+                             onmouseout="this.style.transform='scale(1)'">
+                            <div class="price-label">${escapeHtml(ft)}</div>
+                            <div class="price-value">${avg}¢${getTrendIcon(trend)}</div>
+                        </div>
+                    </div>
+                `;
+            }
+            avgHtml += `
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            avgContainer.innerHTML = avgHtml;
+            avgContainer.style.display = 'flex';
+        } else {
+            avgContainer.style.display = 'none';
         }
         
         let html = '';

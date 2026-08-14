@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-08-15
+### Added
+- Dashboard: Added an "Average Prices" section at the top of the dashboard that calculates and displays the average price across all monitored stations for each fuel type.
+- Dashboard: Average prices are now fully interactive, allowing you to click on them to view historical trends and see price direction indicators (up/down arrows).
+- Integrations: Average prices are now published to Home Assistant via MQTT (`sensor.average_prices_*_price`).
+- Integrations: Added an "Average" option to the Home Assistant Card Generator to generate a card for average prices.
+
+### Fixed
+- Integrations: Fixed an issue where Average Prices were not formatted to 1 decimal place in Home Assistant.
+- Integrations: Fixed an issue where Average Prices for some fuel types would show as 'Unknown' in Home Assistant if the fuel type lacked an immediate price update, by ensuring all configured fuel types are correctly discovered.
+
 ## [0.1.5] - 2026-07-28
 ### Added
 - **Security**: Added anti-CSRF protection across all forms and AJAX endpoints utilizing `Flask-WTF`.

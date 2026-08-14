@@ -933,8 +933,27 @@ def get_current_prices():
             'trends': trends
         })
     
+    average_trends = {}
+    for key, price_history in last_prices.items():
+        if key[0] == 0:
+            fuel_type = key[1]
+            trend = 'unknown'
+            if price_history:
+                current_avg = price_history[0]
+                for hist_price in price_history[1:]:
+                    if abs(current_avg - hist_price) > 0.001:
+                        if current_avg > hist_price:
+                            trend = 'up'
+                        else:
+                            trend = 'down'
+                        break
+                if trend == 'unknown' and price_history:
+                    trend = 'stable'
+            average_trends[fuel_type] = trend
+
     return jsonify({
         'prices': result,
+        'average_trends': average_trends,
         'fetched_at': datetime.now().isoformat()
     })
 
@@ -1346,6 +1365,37 @@ def generate_ha_card():
 
         fuel_type = data.get('fuel_type', 'P98')
         _LOGGER.info("Generating HA card for fuel type: %s", fuel_type)
+        
+        if fuel_type == 'Average':
+            yaml_content = """type: custom:vertical-stack-in-card
+cards:
+  - type: custom:mushroom-title-card
+    title: 📊 Average Fuel Prices
+    alignment: center
+    card_mod:
+      style: |
+        ha-card {
+          font-size: 18px;
+          font-weight: bold;
+        }
+  - type: custom:auto-entities
+    card:
+      type: grid
+      columns: 2
+      square: false
+    card_param: cards
+    sort:
+      method: name
+    filter:
+      include:
+        - entity_id: sensor.average_prices_*_price
+          options:
+            type: custom:mushroom-entity-card
+            icon: mdi:gas-station
+            icon_color: blue
+    exclude: []
+    show_empty: true"""
+            return jsonify({'yaml': yaml_content})
         
         # Get all stations that support this fuel type
         stations_list = cfg.stations

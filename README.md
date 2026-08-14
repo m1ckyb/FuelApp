@@ -77,7 +77,7 @@ This application is based on the [Home Assistant NSW Fuel Station integration](h
 ### Web UI
 The Web UI is the primary way to interact with FuelApp. Accessible at `http://localhost:5000`.
 
-- **Dashboard**: View current prices and trend indicators (Rise/Drop/Stable).
+- **Dashboard**: View current prices, average prices across stations, and trend indicators (Rise/Drop/Stable).
 - **Stations**: Search for stations by ID and manage your monitored list.
 - **Alerts**: Create custom notification rules for specific fuel types.
 - **Settings**: Configure InfluxDB, MQTT, Discord, and API credentials.

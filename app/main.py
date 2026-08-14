@@ -7,7 +7,7 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import schedule
@@ -157,6 +157,16 @@ class FuelApp:
             if station_updates:
                 updates_by_station[station_id] = station_updates
 
+        # Compute average prices for monitored stations unconditionally for MQTT
+        avg_prices = {}
+        avg_counts = {}
+        for (sid, ftype), price in self.last_prices.items():
+            if sid in station_ids:
+                avg_prices[ftype] = avg_prices.get(ftype, 0.0) + price
+                avg_counts[ftype] = avg_counts.get(ftype, 0) + 1
+                
+        averages = {ftype: round(avg_prices[ftype] / avg_counts[ftype], 1) for ftype in avg_prices if avg_counts[ftype] > 0}
+
         # Write to InfluxDB only if there are updates
         if updates_by_station:
             success = self.writer.write_fuel_prices(
@@ -167,6 +177,10 @@ class FuelApp:
 
             if success:
                 _LOGGER.info("Fuel price update completed successfully (wrote changes for %d stations)", len(updates_by_station))
+                
+                if averages:
+                    self.writer.write_average_prices(averages)
+                    
             else:
                 _LOGGER.error("Failed to write fuel prices to InfluxDB")
                 # If write failed, we should arguably invalidate the cache for these items?
@@ -193,6 +207,38 @@ class FuelApp:
         # Publish to MQTT (Always publish current state to ensure HA is in sync)
         if self.mqtt and self.mqtt.connected:
             _LOGGER.info("Publishing to MQTT")
+            
+            # Publish Average Prices
+            all_monitored_fuel_types = set()
+            for sid, ftypes in fuel_types_by_station.items():
+                if sid in station_ids:
+                    all_monitored_fuel_types.update(ftypes)
+                    
+            if all_monitored_fuel_types:
+                self.mqtt.publish_discovery(
+                    0, 
+                    "Average Prices", 
+                    list(all_monitored_fuel_types),
+                    "NSW",
+                    None,
+                    None
+                )
+                for fuel_type, avg_price in averages.items():
+                    self.mqtt.publish_state(0, fuel_type, avg_price)
+                    
+                    attributes = {
+                        "station_id": 0,
+                        "station_name": "Average Prices",
+                        "address": "Global",
+                        "brand": "Average",
+                        "state": "NSW",
+                        "discount": 0.0,
+                        "latitude": None,
+                        "longitude": None,
+                        "last_updated": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.mqtt.publish_attributes(0, fuel_type, attributes)
+
             for station_id in station_ids:
                 station = data.stations.get(station_id)
                 if station:
