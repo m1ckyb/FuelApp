@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-11-21
+### Added
+- **Testing & CI/CD**: Added a `pytest` unit and integration test suite (`tests/test_app.py`) and wired it as a CI gate in `.github/workflows/docker-publish.yml`.
+- **Observability**: Added unauthenticated `/healthz` liveness endpoint and Docker `healthcheck` for the `fuelapp` service in `docker-compose.yml`.
+- **Database**: Cached `station_name` and `station_address` in SQLite `stations` table and added indexes for `webauthn_credentials(user_id)` and `price_alerts(station_id)`.
+
+### Changed
+- **Architecture**: Decoupled `/api/stations`, `/api/alerts`, and `/api/ha/generate-card` from blocking live NSW/TAS API calls by reading cached station metadata from SQLite.
+- **Architecture**: Consolidated `/api/prices/current` into a single InfluxDB query using context managers (`with InfluxDBClient(...)`) and added 6-hour downsampling for broad >30d history queries.
+- **MQTT**: Migrated `paho-mqtt` client to v2 `CallbackAPIVersion.VERSION2` with randomized client IDs and live reconnection on config changes.
+- **Frontend**: Consolidated shared JS utilities (`escapeHtml`, `safeParseJSON`, WebAuthn Base64URL helpers) into `templates/base.html` and deduplicated station lookup logic.
+- **Infrastructure**: Parameterized default credentials in `docker-compose.yml` via `.env` variables and bound InfluxDB port to `127.0.0.1:8086`.
+- **Dependencies**: Bumped `python` base image from `3.14-alpine` to `3.15-alpine` in Dockerfile.
+- **Dependencies**: Bumped `gunicorn` from `26.0.0` to `27.0.1`.
+- **Dependencies**: Bumped `croniter` from `6.2.4` to `7.0.0`.
+- **Dependencies**: Bumped `paho-mqtt` from `2.1.0` to `2.2.0`.
+- **Dependencies**: Bumped `aiohttp` from `3.14.3` to `3.14.5`.
+- **Dependencies**: Bumped `webauthn` from `3.0.0` to `3.0.1`.
+- **Dependencies**: Bumped `python-dotenv` from `1.2.2` to `1.2.4`.
+
+### Fixed
+- **Reliability**: Fixed guaranteed `AttributeError` crash on shutdown and `--once` runs by implementing `InfluxDBWriter.close()`.
+- **Reliability**: Fixed per-request SQLite connection leak and repeated schema DDL in `Config.load_from_database()` by reusing the initialized `ConfigDatabase` instance.
+- **Reliability**: Fixed multi-worker state desynchronization in `update_station()` that returned spurious 404s across Gunicorn workers.
+- **Reliability**: Fixed scheduler loop so changes to `cron_schedule`, `poll_interval`, `timezone`, and MQTT settings apply dynamically without container restarts.
+- **Reliability**: Added a 10-second `aiohttp.ClientTimeout` to `DiscordClient` and filtered out removed fuel types from global average price calculations.
+- **Security**: Fixed path traversal / Zip Slip prefix check in backup download and restore using `Path.is_relative_to()`, isolated restore extraction in `tempfile.TemporaryDirectory`, pruned old backup archives, and removed raw stderr/exception leaks.
+- **Security**: Added SSRF validation for Discord webhook URLs and InfluxDB URLs, strict validation for cron/timezone/station/alert inputs, atomic `BEGIN IMMEDIATE` rate limiting and first-user setup, WebAuthn login rate limiting + `session.clear()`, and `PRAGMA foreign_keys=ON`.
+- **Security**: Fixed XSS vectors across `dashboard.html`, `settings.html`, `stations.html`, and `alerts.html` by escaping all dynamic values and replacing inline `onclick` string interpolation with delegated `data-*` listeners.
+- **Frontend**: Fixed event listener leak on Dashboard refresh and preserved Average Prices trend arrows when changing grouping or sorting.
+
+### Removed
+- Removed dead code (`save_config()`, unused `DATA_NSW_FUEL_STATION`, redundant `webauthn` import, unused `safe_url`, unused `schedule` import).
+
 ## [0.1.6] - 2026-08-15
 ### Added
 - Dashboard: Added an "Average Prices" section at the top of the dashboard that calculates and displays the average price across all monitored stations for each fuel type.

@@ -8,11 +8,16 @@ import os
 import secrets
 import shutil
 import subprocess
+import tempfile
 import zipfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from croniter import croniter
 
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -43,9 +48,24 @@ from webauthn.helpers.structs import (
 from .config import Config, ALLOWED_FUEL_TYPES, setup_logging
 from .data import FuelDataFetcher
 from .mqtt import MQTTClient
-from .notifications import DiscordClient
+from .notifications import DiscordClient, is_valid_discord_webhook_url
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _is_valid_http_url(url: str) -> bool:
+    """Validate that a URL uses http/https and cannot be misinterpreted as a CLI flag."""
+    if not url or not isinstance(url, str):
+        return False
+    stripped = url.strip()
+    if stripped.startswith('-'):
+        return False
+    try:
+        parsed = urlparse(stripped)
+        return parsed.scheme in ('http', 'https') and bool(parsed.netloc)
+    except Exception:
+        return False
+
 
 def _check_rate_limit(key: str, max_attempts: int = 5, window_seconds: int = 60) -> bool:
     """Check if a rate limit has been exceeded. Returns True if allowed."""
@@ -53,13 +73,6 @@ def _check_rate_limit(key: str, max_attempts: int = 5, window_seconds: int = 60)
         return config.db.check_rate_limit(key, max_attempts, window_seconds)
     return True
 
-
-# Log WebAuthn version for debugging
-try:
-    import webauthn
-    _LOGGER.info("WebAuthn version: %s", getattr(webauthn, "__version__", "unknown"))
-except ImportError:
-    _LOGGER.warning("WebAuthn library not found")
 
 from flask_wtf.csrf import CSRFProtect
 
@@ -114,7 +127,7 @@ def add_headers(response):
     # Security headers
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     # Cache control for API endpoints
     if request.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -221,12 +234,15 @@ def refresh_config_and_fetcher():
 @app.before_request
 def check_auth():
     """Check if the user is authenticated or if setup is required."""
+    if request.endpoint == 'healthz':
+        return
+
     if not config or not config.auth_enabled:
         return
     
     # Check if we have any users. If not, redirect to setup
     if config.db and config.db.get_user_count() == 0:
-        if request.endpoint not in ('setup', 'static'):
+        if request.endpoint not in ('setup', 'static', 'healthz'):
             return redirect(url_for('setup'))
         return
 
@@ -235,7 +251,8 @@ def check_auth():
         allowed_endpoints = (
             'login', 
             'setup', 
-            'static', 
+            'static',
+            'healthz',
             'webauthn_login_begin', 
             'webauthn_login_complete'
         )
@@ -243,6 +260,18 @@ def check_auth():
             if request.path.startswith('/api/'):
                 return jsonify({'error': 'Unauthorized'}), 401
             return redirect(url_for('login'))
+
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    """Lightweight health check endpoint for container liveness/readiness probes."""
+    try:
+        if config and config.db:
+            config.db.get_user_count()
+            return jsonify({'status': 'ok'}), 200
+        return jsonify({'status': 'degraded'}), 503
+    except Exception:
+        return jsonify({'status': 'error'}), 503
 
 
 @app.route('/setup', methods=['GET', 'POST'])
@@ -274,13 +303,16 @@ def setup():
             return render_template('setup.html', error="Password must be at least 8 characters long")
             
         password_hash = generate_password_hash(password)
-        user_id = config.db.create_user(username, password_hash)
+        user_id = config.db.create_first_user(username, password_hash)
         
         if user_id:
             user = User(user_id, username)
+            session.clear()
             login_user(user)
             return redirect(url_for('index'))
         else:
+            if config.db.get_user_count() > 0:
+                return redirect(url_for('login'))
             return render_template('setup.html', error="Failed to create user")
             
     return render_template('setup.html')
@@ -373,12 +405,20 @@ def webauthn_register_complete():
     if not options_json:
         return jsonify({'error': 'Registration session expired'}), 400
         
-    registration_verification = verify_registration_response(
-        credential=request.get_json(),
-        expected_origin=request.host_url.rstrip('/'), # origin usually doesn't have trailing slash
-        expected_rp_id=config.webauthn_rp_id,
-        expected_challenge=base64url_to_bytes(json.loads(options_json)['challenge']),
-    )
+    credential_data = request.get_json(silent=True)
+    if not isinstance(credential_data, dict):
+        return jsonify({'error': 'Invalid JSON payload'}), 400
+
+    try:
+        registration_verification = verify_registration_response(
+            credential=credential_data,
+            expected_origin=request.host_url.rstrip('/'),
+            expected_rp_id=config.webauthn_rp_id,
+            expected_challenge=base64url_to_bytes(json.loads(options_json)['challenge']),
+        )
+    except Exception as exc:
+        _LOGGER.warning("WebAuthn registration verification failed: %s", exc)
+        return jsonify({'error': 'Passkey verification failed'}), 400
     
     # Save credential to database
     success = config.db.add_credential(
@@ -386,7 +426,7 @@ def webauthn_register_complete():
         credential_id=registration_verification.credential_id,
         public_key=registration_verification.credential_public_key,
         sign_count=registration_verification.sign_count,
-        transports=json.dumps(request.json.get('response', {}).get('transports', []))
+        transports=json.dumps(credential_data.get('response', {}).get('transports', []))
     )
     
     if success:
@@ -422,6 +462,10 @@ def webauthn_login_begin():
 @app.route('/api/webauthn/login/complete', methods=['POST'])
 def webauthn_login_complete():
     """Complete WebAuthn login process."""
+    ip = request.remote_addr or 'unknown'
+    if not _check_rate_limit(f'webauthn_complete:ip:{ip}', max_attempts=10, window_seconds=60):
+        return jsonify({'error': 'Too many requests. Please try again later.'}), 429
+
     if not config or not config.db:
         return jsonify({'error': 'Database not initialized'}), 500
         
@@ -429,23 +473,33 @@ def webauthn_login_complete():
     if not options_json:
         return jsonify({'error': 'Login session expired'}), 400
         
-    credential_dict = request.get_json()
-    credential_id_bin = base64url_to_bytes(credential_dict.get('id'))
+    credential_dict = request.get_json(silent=True)
+    if not isinstance(credential_dict, dict) or not credential_dict.get('id'):
+        return jsonify({'error': 'Invalid credential payload'}), 400
+
+    try:
+        credential_id_bin = base64url_to_bytes(credential_dict.get('id'))
+    except Exception:
+        return jsonify({'error': 'Invalid credential ID'}), 400
     
     # Find credential in database
     db_credential = config.db.get_credential_by_id(credential_id_bin)
     if not db_credential:
-        _LOGGER.error("Credential not found: %s", credential_dict.get('id'))
+        _LOGGER.warning("WebAuthn credential not found")
         return jsonify({'error': 'Credential not found'}), 404
         
-    authentication_verification = verify_authentication_response(
-        credential=credential_dict,
-        expected_origin=request.host_url.rstrip('/'),
-        expected_rp_id=config.webauthn_rp_id,
-        expected_challenge=base64url_to_bytes(json.loads(options_json)['challenge']),
-        credential_public_key=db_credential['public_key'],
-        credential_current_sign_count=db_credential['sign_count'],
-    )
+    try:
+        authentication_verification = verify_authentication_response(
+            credential=credential_dict,
+            expected_origin=request.host_url.rstrip('/'),
+            expected_rp_id=config.webauthn_rp_id,
+            expected_challenge=base64url_to_bytes(json.loads(options_json)['challenge']),
+            credential_public_key=db_credential['public_key'],
+            credential_current_sign_count=db_credential['sign_count'],
+        )
+    except Exception as exc:
+        _LOGGER.warning("WebAuthn authentication verification failed: %s", exc)
+        return jsonify({'error': 'Authentication verification failed'}), 401
     
     # Update sign count
     config.db.update_credential_sign_count(
@@ -453,10 +507,11 @@ def webauthn_login_complete():
         sign_count=authentication_verification.new_sign_count
     )
     
-    # Login user
+    # Login user (clear session first to prevent session fixation)
     user_data = config.db.get_user(db_credential['user_id'])
     if user_data:
         user = User(user_data['id'], user_data['username'])
+        session.clear()
         login_user(user, remember=True)
         return jsonify({'message': 'Logged in successfully'}), 200
         
@@ -503,7 +558,7 @@ def update_password():
     if not config or not config.db:
         return jsonify({'error': 'Database not initialized'}), 500
         
-    data = request.json
+    data = request.get_json(silent=True) or {}
     current_password = data.get('current_password')
     new_password = data.get('new_password')
     
@@ -589,12 +644,11 @@ def lookup_station():
 @app.route('/api/stations', methods=['GET'])
 @login_required
 def get_stations():
-    """Get all configured stations."""
-    cfg, ftr = refresh_config_and_fetcher()
+    """Get all configured stations directly from SQLite (no blocking live API fetch)."""
+    cfg, _ = refresh_config_and_fetcher()
     if not cfg:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
-    # Fetch stations from DB if available to avoid stale data across workers
     stations_list = cfg.stations
     if cfg.db:
         try:
@@ -604,24 +658,13 @@ def get_stations():
         except Exception as e:
             _LOGGER.error("Failed to fetch stations from DB: %s", e)
 
-    # Try to fetch station details to get names
-    station_names = {}
-    if ftr:
-        try:
-            data = ftr.fetch_station_price_data(stations_list)
-            if data and data.stations:
-                for s in data.stations.values():
-                    station_names[s.code] = s.name
-        except Exception as e:
-            _LOGGER.warning("Failed to fetch station names: %s", e)
-    
     result = []
     for station in stations_list:
         sid = station['station_id']
         result.append({
             'station_id': sid,
             'au_state': station.get('au_state', 'NSW'),
-            'station_name': station_names.get(sid, f"Station {sid}"),
+            'station_name': station.get('station_name') or f"Station {sid}",
             'fuel_types': station['fuel_types'],
             'discount': station.get('discount', 0.0)
         })
@@ -633,45 +676,52 @@ def get_stations():
 @login_required
 def add_station():
     """Add a new station to configuration."""
-    if not config:
+    if not config or not config.db:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
-    data = request.get_json()
-    station_id = data.get('station_id')
+    data = request.get_json(silent=True) or {}
+    try:
+        station_id = int(data.get('station_id'))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Valid positive station_id is required'}), 400
+
+    if station_id <= 0:
+        return jsonify({'error': 'station_id must be a positive integer'}), 400
+
     fuel_types = data.get('fuel_types', [])
-    au_state = data.get('au_state', 'NSW')
-    discount = float(data.get('discount', 0.0))
+    au_state = str(data.get('au_state', 'NSW')).upper()
+    station_name = str(data.get('station_name', '') or '').strip()
+
+    if au_state not in ('NSW', 'TAS'):
+        return jsonify({'error': 'au_state must be NSW or TAS'}), 400
+
+    try:
+        discount = float(data.get('discount', 0.0))
+        if discount < 0:
+            return jsonify({'error': 'discount cannot be negative'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid discount value'}), 400
     
-    if not station_id:
-        return jsonify({'error': 'station_id is required'}), 400
-    
-    if not fuel_types:
+    if not isinstance(fuel_types, list) or not fuel_types:
         return jsonify({'error': 'At least one fuel type is required'}), 400
     
-    # Validate fuel types
     invalid_types = [ft for ft in fuel_types if ft not in ALLOWED_FUEL_TYPES]
     if invalid_types:
         return jsonify({'error': f'Invalid fuel types: {invalid_types}'}), 400
     
-    # Check if station already exists
-    stations_list = config.stations
-    if config.db:
-        stations_list = config.db.get_stations()
+    stations_list = config.db.get_stations()
     for station in stations_list:
         if station['station_id'] == station_id:
             return jsonify({'error': 'Station already exists'}), 400
-
     
-    # Add station to database
-    if config.db and config.db.add_station(station_id, fuel_types, au_state, discount):
-        # Update in-memory config
+    if config.db.add_station(station_id, fuel_types, au_state, discount, station_name=station_name):
         new_station = {
             'station_id': station_id,
             'au_state': au_state,
+            'station_name': station_name or f"Station {station_id}",
             'fuel_types': fuel_types,
             'discount': discount
         }
-        config.stations.append(new_station)
         return jsonify({'message': 'Station added successfully', 'station': new_station}), 201
     else:
         return jsonify({'error': 'Failed to add station'}), 500
@@ -681,50 +731,54 @@ def add_station():
 @login_required
 def delete_station(station_id):
     """Delete a station from configuration."""
-    if not config:
+    if not config or not config.db:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
-    # Delete from database
-    if config.db and config.db.delete_station(station_id):
-        # Update in-memory config
-        config.stations = [s for s in config.stations if s['station_id'] != station_id]
+    if config.db.delete_station(station_id):
         return jsonify({'message': 'Station deleted successfully'}), 200
     else:
-        return jsonify({'error': 'Failed to delete station'}), 500
+        return jsonify({'error': 'Station not found'}), 404
 
 
 @app.route('/api/stations/<int:station_id>', methods=['PUT'])
 @login_required
 def update_station(station_id):
     """Update a station configuration."""
-    if not config:
+    if not config or not config.db:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     fuel_types = data.get('fuel_types', [])
-    au_state = data.get('au_state', 'NSW')
-    discount = float(data.get('discount', 0.0))
+    au_state = str(data.get('au_state', 'NSW')).upper()
+    station_name = data.get('station_name')
+
+    if au_state not in ('NSW', 'TAS'):
+        return jsonify({'error': 'au_state must be NSW or TAS'}), 400
+
+    try:
+        discount = float(data.get('discount', 0.0))
+        if discount < 0:
+            return jsonify({'error': 'discount cannot be negative'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid discount value'}), 400
     
-    if not fuel_types:
+    if not isinstance(fuel_types, list) or not fuel_types:
         return jsonify({'error': 'At least one fuel type is required'}), 400
     
-    # Validate fuel types
     invalid_types = [ft for ft in fuel_types if ft not in ALLOWED_FUEL_TYPES]
     if invalid_types:
         return jsonify({'error': f'Invalid fuel types: {invalid_types}'}), 400
     
-    # Update in database
-    if config.db and config.db.update_station(station_id, fuel_types, au_state, discount):
-        # Update in-memory config
-        for station in config.stations:
-            if station['station_id'] == station_id:
-                station['fuel_types'] = fuel_types
-                station['au_state'] = au_state
-                station['discount'] = discount
-                return jsonify({'message': 'Station updated successfully', 'station': station}), 200
-        return jsonify({'error': 'Station not found in memory'}), 404
+    if config.db.update_station(station_id, fuel_types, au_state, discount, station_name=station_name):
+        updated = {
+            'station_id': station_id,
+            'au_state': au_state,
+            'fuel_types': fuel_types,
+            'discount': discount,
+        }
+        return jsonify({'message': 'Station updated successfully', 'station': updated}), 200
     else:
-        return jsonify({'error': 'Failed to update station'}), 500
+        return jsonify({'error': 'Station not found'}), 404
 
 
 @app.route('/api/prices/current', methods=['GET'])
@@ -770,51 +824,56 @@ def get_current_prices():
         s['station_id']: s.get('discount', 0.0)
         for s in stations_list
     }
+    last_prices = {}
 
     if cfg:
         try:
-            client = InfluxDBClient(
+            with InfluxDBClient(
                 url=cfg.influxdb_url,
                 token=cfg.influxdb_token,
                 org=cfg.influxdb_org
-            )
-            query_api = client.query_api()
-            
-            # Query last recorded price for each series in the last 30 days
-            query = f'from(bucket: "{cfg.influxdb_bucket}")'
-            query += ' |> range(start: -30d)'
-            query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
-            query += ' |> filter(fn: (r) => r._field == "price")'
-            query += ' |> last()'
-            
-            tables = query_api.query(query)
-            
-            for table in tables:
-                for record in table.records:
-                    sid = record.values.get('station_id')
-                    ft = record.values.get('fuel_type')
-                    price = record.get_value()
-                    sname = record.values.get('station_name') or f"Station {sid}"
-                    saddr = record.values.get('station_address') or ""
-                    
-                    if sid and ft:
-                        try:
-                            sid = int(sid)
-                            if sid not in data.stations:
-                                au_state = 'NSW'
-                                for s in stations_list:
-                                    if s['station_id'] == sid:
-                                        au_state = s.get('au_state', 'NSW')
-                                        break
-                                data.stations[sid] = MockStation(sid, sname, saddr, au_state)
-                            
-                            # InfluxDB stores discounted price; reconstruct raw price for downstream
-                            discount = discounts_by_station.get(sid, 0.0)
-                            raw_price = price + discount
-                            data.prices[(sid, ft)] = MockPrice(sid, ft, raw_price, record.get_time())
-                        except ValueError:
-                            pass
-            client.close()
+            ) as client:
+                query_api = client.query_api()
+                
+                # Single 30-day query sorted desc (limit 50 per series) provides both
+                # the latest price and historical prices for trend comparison.
+                query = f'from(bucket: "{cfg.influxdb_bucket}")'
+                query += ' |> range(start: -30d)'
+                query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
+                query += ' |> filter(fn: (r) => r._field == "price")'
+                query += ' |> sort(columns: ["_time"], desc: true)'
+                query += ' |> limit(n: 50)'
+                
+                tables = query_api.query(query)
+                
+                for table in tables:
+                    for record in table.records:
+                        sid = record.values.get('station_id')
+                        ft = record.values.get('fuel_type')
+                        price = record.get_value()
+                        sname = record.values.get('station_name') or f"Station {sid}"
+                        saddr = record.values.get('station_address') or ""
+                        
+                        if sid and ft:
+                            try:
+                                sid = int(sid)
+                                key = (sid, ft)
+                                if key not in last_prices:
+                                    last_prices[key] = []
+                                    if sid not in data.stations:
+                                        au_state = 'NSW'
+                                        for s in stations_list:
+                                            if s['station_id'] == sid:
+                                                au_state = s.get('au_state', 'NSW')
+                                                break
+                                        data.stations[sid] = MockStation(sid, sname, saddr, au_state)
+                                    # InfluxDB stores discounted price; reconstruct raw price for downstream
+                                    discount = discounts_by_station.get(sid, 0.0)
+                                    raw_price = price + discount
+                                    data.prices[key] = MockPrice(sid, ft, raw_price, record.get_time())
+                                last_prices[key].append(price)
+                            except ValueError:
+                                pass
         except Exception as e:
             _LOGGER.error("Failed to query InfluxDB for current prices: %s", e)
 
@@ -825,58 +884,12 @@ def get_current_prices():
         if not data:
             return jsonify({'error': 'Failed to fetch fuel prices'}), 500
 
-    
     # Filter for configured stations
     station_ids = [s['station_id'] for s in stations_list]
     fuel_types_by_station = {
         s['station_id']: s['fuel_types'] 
         for s in stations_list
     }
-    discounts_by_station = {
-        s['station_id']: s.get('discount', 0.0)
-        for s in stations_list
-    }
-    
-    # Fetch last known prices from InfluxDB for comparison
-    last_prices = {}
-    if config:
-        try:
-            client = InfluxDBClient(
-                url=config.influxdb_url,
-                token=config.influxdb_token,
-                org=config.influxdb_org
-            )
-            query_api = client.query_api()
-            
-            # Query for the last 50 prices to find recent price changes
-            query = f'from(bucket: "{config.influxdb_bucket}")'
-            query += ' |> range(start: -7d)'
-            query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
-            query += ' |> filter(fn: (r) => r._field == "price")'
-            query += ' |> sort(columns: ["_time"], desc: true)'
-            query += ' |> limit(n: 50)'
-            
-            tables = query_api.query(query)
-            
-            for table in tables:
-                for record in table.records:
-                    sid = record.values.get('station_id')
-                    ft = record.values.get('fuel_type')
-                    price = record.get_value()
-                    if sid and ft:
-                        # Convert sid to int if it's stored as string
-                        try:
-                            sid = int(sid)
-                            key = (sid, ft)
-                            if key not in last_prices:
-                                last_prices[key] = []
-                            last_prices[key].append(price)
-                        except ValueError:
-                            pass
-            
-            client.close()
-        except Exception as e:
-            _LOGGER.warning("Failed to fetch last prices for comparison: %s", e)
 
     result = []
     for station_id in station_ids:
@@ -987,44 +1000,41 @@ def get_price_history():
         return jsonify({'error': 'days must be between 1 and 365'}), 400
     
     try:
-        # Connect to InfluxDB
-        client = InfluxDBClient(
+        with InfluxDBClient(
             url=config.influxdb_url,
             token=config.influxdb_token,
             org=config.influxdb_org
-        )
-        query_api = client.query_api()
-        
-        # Build Flux query
-        filters = []
-        filters.append(f'r._measurement == "fuel_price"')
-        
-        if station_id is not None:
-            filters.append(f'r.station_id == "{station_id}"')
-        
-        if fuel_type:
-            filters.append(f'r.fuel_type == "{fuel_type}"')
+        ) as client:
+            query_api = client.query_api()
             
-        filter_expr = ' and '.join(filters)
-        query = f'from(bucket: "{config.influxdb_bucket}") |> range(start: -{days}d)'
-        query += f' |> filter(fn: (r) => {filter_expr})'
-        query += ' |> filter(fn: (r) => r._field == "price")'
-        query += ' |> sort(columns: ["_time"])'
-        
-        tables = query_api.query(query)
-        
-        # Extract data
-        history = []
-        for table in tables:
-            for record in table.records:
-                history.append({
-                    'time': record.get_time().isoformat(),
-                    'price': record.get_value(),
-                    'station_id': record.values.get('station_id'),
-                    'fuel_type': record.values.get('fuel_type')
-                })
-        
-        client.close()
+            # Build Flux query
+            filters = ['r._measurement == "fuel_price"']
+            
+            if station_id is not None:
+                filters.append(f'r.station_id == "{station_id}"')
+            
+            if fuel_type:
+                filters.append(f'r.fuel_type == "{fuel_type}"')
+                
+            filter_expr = ' and '.join(filters)
+            query = f'from(bucket: "{config.influxdb_bucket}") |> range(start: -{days}d)'
+            query += f' |> filter(fn: (r) => {filter_expr})'
+            query += ' |> filter(fn: (r) => r._field == "price")'
+            if days > 30 and station_id is None and not fuel_type:
+                query += ' |> aggregateWindow(every: 6h, fn: mean, createEmpty: false)'
+            query += ' |> sort(columns: ["_time"])'
+            
+            tables = query_api.query(query)
+            
+            history = []
+            for table in tables:
+                for record in table.records:
+                    history.append({
+                        'time': record.get_time().isoformat(),
+                        'price': record.get_value(),
+                        'station_id': record.values.get('station_id'),
+                        'fuel_type': record.values.get('fuel_type')
+                    })
         
         return jsonify({'history': history})
         
@@ -1036,24 +1046,16 @@ def get_price_history():
 @app.route('/api/alerts', methods=['GET'])
 @login_required
 def get_alerts():
-    """Get all configured price alerts."""
-    cfg, ftr = refresh_config_and_fetcher()
+    """Get all configured price alerts (uses cached station names from SQLite)."""
+    cfg, _ = refresh_config_and_fetcher()
     if not cfg or not cfg.db:
         return jsonify({'error': 'Database not available'}), 500
     
     alerts = cfg.db.get_alerts()
-    
-    # Try to fetch station names
-    station_names = {}
-    if ftr:
-        try:
-            stations_to_fetch = [{'station_id': a['station_id']} for a in alerts]
-            data = ftr.fetch_station_price_data(stations_to_fetch)
-            if data and data.stations:
-                for s in data.stations.values():
-                    station_names[s.code] = s.name
-        except Exception as e:
-            _LOGGER.warning("Failed to fetch station names for alerts: %s", e)
+    station_names = {
+        s['station_id']: s.get('station_name') or f"Station {s['station_id']}"
+        for s in cfg.db.get_stations()
+    }
     
     for alert in alerts:
         alert['station_name'] = station_names.get(alert['station_id'], f"Station {alert['station_id']}")
@@ -1068,22 +1070,29 @@ def add_alert():
     if not config or not config.db:
         return jsonify({'error': 'Database not available'}), 500
     
-    data = request.get_json()
-    station_id = data.get('station_id')
+    data = request.get_json(silent=True) or {}
+    try:
+        station_id = int(data.get('station_id'))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Valid positive station_id is required'}), 400
+
     fuel_type = data.get('fuel_type')
     threshold = data.get('threshold')
     
-    if not station_id or not fuel_type or threshold is None:
+    if station_id <= 0 or not fuel_type or threshold is None:
         return jsonify({'error': 'station_id, fuel_type, and threshold are required'}), 400
+
+    if fuel_type not in ALLOWED_FUEL_TYPES:
+        return jsonify({'error': f'Invalid fuel type: {fuel_type}'}), 400
     
     try:
         threshold = float(threshold)
-    except ValueError:
+        if threshold <= 0:
+            return jsonify({'error': 'Threshold must be greater than 0'}), 400
+    except (ValueError, TypeError):
         return jsonify({'error': 'Invalid threshold'}), 400
     
     if config.db.add_alert(station_id, fuel_type, threshold):
-        # Refresh in-memory alerts
-        config.alerts = config.db.get_alerts()
         return jsonify({'message': 'Alert added successfully'}), 201
     else:
         return jsonify({'error': 'Failed to add alert'}), 500
@@ -1097,11 +1106,9 @@ def delete_alert(alert_id):
         return jsonify({'error': 'Database not available'}), 500
     
     if config.db.delete_alert(alert_id):
-        # Refresh in-memory alerts
-        config.alerts = config.db.get_alerts()
         return jsonify({'message': 'Alert deleted successfully'}), 200
     else:
-        return jsonify({'error': 'Failed to delete alert'}), 500
+        return jsonify({'error': 'Alert not found'}), 404
 
 
 @app.route('/api/alerts/<int:alert_id>/toggle', methods=['PUT'])
@@ -1111,15 +1118,13 @@ def toggle_alert(alert_id):
     if not config or not config.db:
         return jsonify({'error': 'Database not available'}), 500
     
-    data = request.get_json()
-    enabled = data.get('enabled', True)
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get('enabled', True))
     
     if config.db.toggle_alert(alert_id, enabled):
-        # Refresh in-memory alerts
-        config.alerts = config.db.get_alerts()
         return jsonify({'message': 'Alert toggled successfully'}), 200
     else:
-        return jsonify({'error': 'Failed to toggle alert'}), 500
+        return jsonify({'error': 'Alert not found'}), 404
 
 
 @app.route('/api/fuel-types', methods=['GET'])
@@ -1137,39 +1142,29 @@ def get_config():
     if not cfg:
         return jsonify({'error': 'Configuration not loaded'}), 500
 
-    
-    # Parse URL to hide sensitive parts
-    from urllib.parse import urlparse
-    parsed_url = urlparse(config.influxdb_url)
-    safe_url = f"{parsed_url.scheme}://{parsed_url.hostname}"
-    if parsed_url.port:
-        safe_url += f":{parsed_url.port}"
-    
-    # Return full URL for editing in the UI
-    # Note: This is intentional - users need the full URL to edit it
-    # The token is masked for security
+    # Return full URL for editing in the UI; secrets are masked
     return jsonify({
-        'influxdb_url': config.influxdb_url,
-        'influxdb_org': config.influxdb_org,
-        'influxdb_bucket': config.influxdb_bucket,
-        'influxdb_token': '***' if config.influxdb_token else '',
-        'fuel_api_client_id': config.fuel_api_client_id,
-        'fuel_api_client_secret': '***' if config.fuel_api_client_secret else '',
-        'discord_webhook_url': '***' if config.discord_webhook_url else '',
-        'discord_price_threshold': config.discord_price_threshold,
-        'mqtt_broker': config.mqtt_broker,
-        'mqtt_port': config.mqtt_port,
-        'mqtt_user': config.mqtt_user,
-        'mqtt_password': '***' if config.mqtt_password else '',
-        'mqtt_discovery_prefix': config.mqtt_discovery_prefix,
-        'poll_interval': config.poll_interval,
-        'cron_schedule': config.cron_schedule,
-        'timezone': config.timezone,
-        'log_level': config.log_level,
-        'auth_enabled': config.auth_enabled,
-        'webauthn_rp_id': config.webauthn_rp_id,
-        'webauthn_rp_name': config.webauthn_rp_name,
-        'version': config.version
+        'influxdb_url': cfg.influxdb_url,
+        'influxdb_org': cfg.influxdb_org,
+        'influxdb_bucket': cfg.influxdb_bucket,
+        'influxdb_token': '***' if cfg.influxdb_token else '',
+        'fuel_api_client_id': cfg.fuel_api_client_id,
+        'fuel_api_client_secret': '***' if cfg.fuel_api_client_secret else '',
+        'discord_webhook_url': '***' if cfg.discord_webhook_url else '',
+        'discord_price_threshold': cfg.discord_price_threshold,
+        'mqtt_broker': cfg.mqtt_broker,
+        'mqtt_port': cfg.mqtt_port,
+        'mqtt_user': cfg.mqtt_user,
+        'mqtt_password': '***' if cfg.mqtt_password else '',
+        'mqtt_discovery_prefix': cfg.mqtt_discovery_prefix,
+        'poll_interval': cfg.poll_interval,
+        'cron_schedule': cfg.cron_schedule,
+        'timezone': cfg.timezone,
+        'log_level': cfg.log_level,
+        'auth_enabled': cfg.auth_enabled,
+        'webauthn_rp_id': cfg.webauthn_rp_id,
+        'webauthn_rp_name': cfg.webauthn_rp_name,
+        'version': cfg.version
     })
 
 
@@ -1180,14 +1175,15 @@ def update_config():
     if not config:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     
     # Update InfluxDB settings
     if 'influxdb_url' in data:
-        config.influxdb_url = data['influxdb_url']
+        if not _is_valid_http_url(data['influxdb_url']):
+            return jsonify({'error': 'Invalid InfluxDB URL (must be http:// or https://)'}), 400
+        config.influxdb_url = data['influxdb_url'].strip()
     
     if 'influxdb_token' in data and data['influxdb_token'] and data['influxdb_token'] != '***':
-        # Only update token if it's provided and not the masked value
         config.influxdb_token = data['influxdb_token']
     
     if 'influxdb_org' in data:
@@ -1205,22 +1201,29 @@ def update_config():
 
     # Update Discord settings
     if 'discord_webhook_url' in data and data['discord_webhook_url'] and data['discord_webhook_url'] != '***':
-        config.discord_webhook_url = data['discord_webhook_url']
+        if not is_valid_discord_webhook_url(data['discord_webhook_url']):
+            return jsonify({'error': 'Invalid Discord webhook URL'}), 400
+        config.discord_webhook_url = data['discord_webhook_url'].strip()
     
     if 'discord_price_threshold' in data:
         try:
-            config.discord_price_threshold = float(data['discord_price_threshold'])
+            threshold = float(data['discord_price_threshold'])
+            if threshold < 0:
+                return jsonify({'error': 'Discord price threshold cannot be negative'}), 400
+            config.discord_price_threshold = threshold
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid Discord price threshold'}), 400
 
     # Update MQTT settings
-
     if 'mqtt_broker' in data:
-        config.mqtt_broker = data['mqtt_broker']
+        config.mqtt_broker = str(data['mqtt_broker']).strip()
     
     if 'mqtt_port' in data:
         try:
-            config.mqtt_port = int(data['mqtt_port'])
+            port = int(data['mqtt_port'])
+            if not (1 <= port <= 65535):
+                return jsonify({'error': 'MQTT port must be between 1 and 65535'}), 400
+            config.mqtt_port = port
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid MQTT port'}), 400
             
@@ -1240,17 +1243,26 @@ def update_config():
             if poll_interval < 1:
                 return jsonify({'error': 'Poll interval must be at least 1 minute'}), 400
             config.poll_interval = poll_interval
-        except ValueError:
+        except (ValueError, TypeError):
             return jsonify({'error': 'Invalid poll interval'}), 400
             
     if 'cron_schedule' in data:
-        config.cron_schedule = data['cron_schedule']
+        cron_val = str(data['cron_schedule'] or '').strip()
+        if cron_val and not croniter.is_valid(cron_val):
+            return jsonify({'error': 'Invalid cron schedule expression'}), 400
+        config.cron_schedule = cron_val
         
     if 'timezone' in data:
-        config.timezone = data['timezone']
+        tz_val = str(data['timezone'] or '').strip()
+        if tz_val:
+            try:
+                ZoneInfo(tz_val)
+            except (ZoneInfoNotFoundError, KeyError, ValueError):
+                return jsonify({'error': f'Invalid timezone: {tz_val}'}), 400
+        config.timezone = tz_val
     
     if 'log_level' in data:
-        log_level = data['log_level'].upper()
+        log_level = str(data['log_level']).upper()
         if log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
             return jsonify({'error': 'Invalid log level'}), 400
         config.log_level = log_level
@@ -1267,7 +1279,6 @@ def update_config():
     
     # Save to database
     if config.save_to_database():
-        # Re-initialize fetcher with new credentials
         global fetcher
         fetcher = FuelDataFetcher(
             client_id=config.fuel_api_client_id,
@@ -1283,18 +1294,19 @@ def update_config():
 def test_discord_config():
     """Test Discord notification configuration."""
     cfg, _ = refresh_config_and_fetcher()
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     webhook_url = data.get('discord_webhook_url')
     
     # Fallback to stored webhook URL if not provided
     if not webhook_url and cfg and cfg.discord_webhook_url:
         webhook_url = cfg.discord_webhook_url
 
-
     if not webhook_url:
         return jsonify({'error': 'Webhook URL is required'}), 400
+
+    if not is_valid_discord_webhook_url(webhook_url):
+        return jsonify({'error': 'Invalid Discord webhook URL (must be https://discord.com/api/webhooks/...)'}), 400
         
-    from .notifications import DiscordClient
     notifier = DiscordClient(webhook_url)
     
     message = "🔔 **FuelApp Test Notification**\nYour Discord webhook is configured correctly!"
@@ -1311,15 +1323,13 @@ def test_discord_config():
 def test_mqtt_config():
     """Test MQTT configuration."""
     cfg, _ = refresh_config_and_fetcher()
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     
     broker = data.get('mqtt_broker')
     port = data.get('mqtt_port', 1883)
     user = data.get('mqtt_user')
     password = data.get('mqtt_password')
     
-    # Fallback to stored password if not provided and user matches (or is new)
-    # This handles the "leave blank to keep current" UI logic
     if not password and cfg and cfg.mqtt_password:
         password = cfg.mqtt_password
 
@@ -1328,6 +1338,8 @@ def test_mqtt_config():
         
     try:
         port = int(port)
+        if not (1 <= port <= 65535):
+            return jsonify({'error': 'Port must be between 1 and 65535'}), 400
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid port'}), 400
         
@@ -1409,27 +1421,12 @@ cards:
         
         _LOGGER.info("Found %d configured stations", len(stations_list))
 
-        # Try to fetch station details to get names
-        station_names = {}
-        if ftr:
-            try:
-                _LOGGER.info("Fetching station data for names...")
-                station_data = ftr.fetch_station_price_data(stations_list)
-                if station_data and station_data.stations:
-                    for s in station_data.stations.values():
-                        station_names[s.code] = s.name
-                    _LOGGER.info("Mapped names for %d stations", len(station_names))
-                else:
-                    _LOGGER.warning("No station data returned from fetcher")
-            except Exception as e:
-                _LOGGER.warning("Failed to fetch station names: %s", e)
-
-        # Build list of entities for this fuel type
+        # Build list of entities for this fuel type using cached station names from SQLite
         entities = []
         for station in stations_list:
             if fuel_type in station['fuel_types']:
                 sid = station['station_id']
-                name = station_names.get(sid, f"Station {sid}")
+                name = station.get('station_name') or f"Station {sid}"
                 
                 device_slug = ha_slugify(name)
                 fuel_slug = ha_slugify(fuel_type)
@@ -1523,6 +1520,9 @@ def create_backup():
         
         _LOGGER.info("Starting InfluxDB backup to %s", backup_dir)
         
+        if not _is_valid_http_url(config.influxdb_url):
+            return jsonify({'error': 'Invalid InfluxDB URL configured'}), 400
+
         # Run influx backup command using env var instead of CLI arg to avoid process listing leak
         env = os.environ.copy()
         env['INFLUX_TOKEN'] = config.influxdb_token
@@ -1538,13 +1538,15 @@ def create_backup():
         
         if result.returncode != 0:
             _LOGGER.error("Backup failed (code %d): %s\nStdout: %s", result.returncode, result.stderr, result.stdout)
-            return jsonify({'error': f'Backup failed: {result.stderr or "Unknown error"}'}), 500
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            return jsonify({'error': 'Backup failed. Check server logs for details.'}), 500
             
         _LOGGER.info("Backup command successful, creating zip file")
         
         # Create zip file
+        backups_root = Path(config.data_dir) / 'backups'
         zip_filename = f"backup_{timestamp}.zip"
-        zip_path = Path(config.data_dir) / 'backups' / zip_filename
+        zip_path = backups_root / zip_filename
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             files_added = 0
             for root, dirs, files in os.walk(backup_dir):
@@ -1556,8 +1558,16 @@ def create_backup():
         
         _LOGGER.info("Zip file created: %s (added %d files)", zip_path, files_added)
         
-        # Clean up directory
-        shutil.rmtree(backup_dir)
+        # Clean up staging directory
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+        # Prune older backup archives (keep latest 5)
+        existing_zips = sorted(backups_root.glob('backup_*.zip'), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old_zip in existing_zips[5:]:
+            try:
+                old_zip.unlink()
+            except Exception as exc:
+                _LOGGER.warning("Failed to prune old backup %s: %s", old_zip, exc)
         
         return jsonify({
             'message': 'Backup created successfully',
@@ -1574,13 +1584,12 @@ def create_backup():
 @login_required
 def download_backup(filename):
     """Download a previously created backup file."""
-    # Security check: only allow files in the backups directory and with .zip extension
-    if not filename.endswith('.zip'):
+    if not filename.endswith('.zip') or '/' in filename or '\\' in filename:
         return jsonify({'error': 'Invalid filename'}), 400
     
     backup_dir = (Path(config.data_dir) / 'backups').resolve()
     zip_path = (backup_dir / filename).resolve()
-    if not str(zip_path).startswith(str(backup_dir)):
+    if not zip_path.is_relative_to(backup_dir) or zip_path.parent != backup_dir:
         return jsonify({'error': 'Invalid filename'}), 400
     if not zip_path.exists():
         return jsonify({'error': 'Backup file not found'}), 404
@@ -1602,6 +1611,9 @@ def restore_backup():
     if not config:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
+    if not _is_valid_http_url(config.influxdb_url):
+        return jsonify({'error': 'Invalid InfluxDB URL configured'}), 400
+
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
         
@@ -1612,68 +1624,42 @@ def restore_backup():
     if not file.filename.endswith('.zip'):
         return jsonify({'error': 'File must be a .zip archive'}), 400
 
-    temp_dir = Path(config.data_dir) / 'restore_temp'
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True)
-    
     try:
-        # Save and extract zip
-        zip_path = temp_dir / 'restore.zip'
-        file.save(zip_path)
-        
-        with zipfile.ZipFile(zip_path, 'r') as zipf:
-            for member in zipf.namelist():
-                # Prevent Zip Slip by ensuring the target path is within temp_dir
-                target_path = (temp_dir / member).resolve()
-                if not str(target_path).startswith(str(temp_dir.resolve())):
-                    _LOGGER.error("Zip Slip vulnerability detected: %s", member)
-                    return jsonify({'error': 'Invalid archive: contains unsafe paths'}), 400
-                zipf.extract(member, temp_dir)
+        with tempfile.TemporaryDirectory(dir=config.data_dir, prefix='restore_') as tmp:
+            temp_root = Path(tmp).resolve()
+            zip_path = temp_root / 'restore.zip'
+            extract_dir = (temp_root / 'extracted').resolve()
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            file.save(zip_path)
             
-        # Run influx restore command
-        # Note: Restore usually requires writing to a new bucket if the old one exists
-        # or using --full to replace everything (dangerous). 
-        # Here we'll try to restore to the configured bucket. 
-        # If it fails due to existing data, we might need a different approach.
-        # But 'influx restore' creates new buckets if they don't exist.
-        # If the bucket exists, it might conflict. 
-        
-        # Basic restore command using env var instead of CLI arg
-        env = os.environ.copy()
-        env['INFLUX_TOKEN'] = config.influxdb_token
-        cmd = [
-            "influx", "restore",
-            str(temp_dir),
-            "--host", config.influxdb_url,
-            "--full"
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-        
-        if result.returncode != 0:
-            # If full restore fails, try specific bucket restore? 
-            # But backup format is specific.
-            _LOGGER.error("Restore failed: %s", result.stderr)
-            return jsonify({'error': f'Restore failed: {result.stderr}'}), 500
+            with zipfile.ZipFile(zip_path, 'r') as zipf:
+                for member in zipf.namelist():
+                    target_path = (extract_dir / member).resolve()
+                    if not target_path.is_relative_to(extract_dir):
+                        _LOGGER.error("Zip Slip vulnerability detected: %s", member)
+                        return jsonify({'error': 'Invalid archive: contains unsafe paths'}), 400
+                    zipf.extract(member, extract_dir)
+                
+            env = os.environ.copy()
+            env['INFLUX_TOKEN'] = config.influxdb_token
+            cmd = [
+                "influx", "restore",
+                str(extract_dir),
+                "--host", config.influxdb_url,
+                "--full"
+            ]
             
-        return jsonify({'message': 'Restore completed successfully'}), 200
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            
+            if result.returncode != 0:
+                _LOGGER.error("Restore failed: %s", result.stderr)
+                return jsonify({'error': 'Restore failed. Check server logs for details.'}), 500
+                
+            return jsonify({'message': 'Restore completed successfully'}), 200
         
     except Exception as exc:
         _LOGGER.error("Restore exception: %s", exc)
-        return jsonify({'error': str(exc)}), 500
-    finally:
-        # Cleanup
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
-
-
-def save_config():
-    """Save current configuration to database (deprecated - kept for compatibility)."""
-    if not config:
-        return
-    
-    config.save_to_database()
+        return jsonify({'error': 'Restore failed'}), 500
 
 
 def run_web_app(config_obj: Config, host='0.0.0.0', port=5000, debug=False):

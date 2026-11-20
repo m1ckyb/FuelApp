@@ -44,15 +44,21 @@ This application is based on the [Home Assistant NSW Fuel Station integration](h
    cd FuelApp
    ```
 
-2. **Start the services:**
+2. **Configure environment variables (recommended):**
+   ```bash
+   cp .env.example .env
+   # Edit .env to set strong InfluxDB and Grafana credentials
+   ```
+
+3. **Start the services:**
    ```bash
    docker compose up -d
    ```
 
-3. **Access the application:**
-   - **FuelApp Web UI**: http://localhost:5000
-   - **InfluxDB**: http://localhost:8086 (admin/adminpassword)
-   - **Grafana**: http://localhost:3000 (admin/admin)
+4. **Access the application:**
+   - **FuelApp Web UI**: http://localhost:5000 (Health check: `GET /healthz`)
+   - **InfluxDB**: http://127.0.0.1:8086 (localhost only)
+   - **Grafana**: http://localhost:3000
 
 ### Manual Installation
 

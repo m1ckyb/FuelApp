@@ -331,3 +331,14 @@ class InfluxDBWriter:
         except Exception as exc:
             _LOGGER.error("Failed to write average prices to InfluxDB: %s", exc)
             return False
+
+    def close(self):
+        """Close the InfluxDB client connection."""
+        if self.client:
+            try:
+                self.client.close()
+            except Exception as exc:
+                _LOGGER.warning("Error closing InfluxDB client: %s", exc)
+            finally:
+                self.client = None
+                self.write_api = None

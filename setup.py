@@ -5,9 +5,10 @@ Setup script for NSW Fuel Station App.
 from setuptools import setup, find_packages
 from pathlib import Path
 
-# Read the README file
+# Read the README and VERSION files
 this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text()
+version = (this_directory / "VERSION.txt").read_text().strip()
 
 # Read requirements
 requirements = []
@@ -16,7 +17,7 @@ with open('requirements.txt') as f:
 
 setup(
     name='nsw-fuel-app',
-    version='1.0.0',
+    version=version,
     author='NSW Fuel Station App Contributors',
     description='A standalone app to monitor NSW fuel prices and store them in InfluxDB',
     long_description=long_description,
@@ -34,11 +35,8 @@ setup(
         'Intended Audience :: Developers',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9',
-        'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
     ],
-    python_requires='>=3.8',
+    python_requires='>=3.11',
 )

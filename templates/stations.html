@@ -163,13 +163,8 @@
     let addStationModal;
     let editStationModal;
     let stationsData = []; // Store loaded stations globally
-    
-    // Helper function to escape HTML to prevent XSS
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
+    let lookedUpAddStationName = '';
+    let lookedUpEditStationName = '';
     
     document.addEventListener('DOMContentLoaded', function() {
         addStationModal = new bootstrap.Modal(document.getElementById('addStationModal'));
@@ -308,13 +303,14 @@
         let html = '';
         
         for (const fuelType of fuelTypes) {
+            const safeFt = escapeHtml(fuelType);
             const checked = selectedTypes.includes(fuelType) ? 'checked' : '';
             html += `
                 <div class="form-check">
-                    <input class="form-check-input" type="checkbox" value="${fuelType}" 
-                           id="${containerId}_${fuelType}" ${checked}>
-                    <label class="form-check-label" for="${containerId}_${fuelType}">
-                        ${fuelType}
+                    <input class="form-check-input" type="checkbox" value="${safeFt}" 
+                           id="${containerId}_${safeFt}" ${checked}>
+                    <label class="form-check-label" for="${containerId}_${safeFt}">
+                        ${safeFt}
                     </label>
                 </div>
             `;
@@ -329,126 +325,69 @@
         return Array.from(checkboxes).map(cb => cb.value);
     }
     
-    async function lookupStation() {
-        const stationId = document.getElementById('stationId').value;
-        const btn = document.getElementById('checkStationBtn');
-        const nameDisplay = document.getElementById('stationNameDisplay');
-        
-        if (!stationId) {
-            showToast('Please enter a station ID', 'warning');
-            return;
-        }
-        
-        // Show loading state
-        const originalBtnContent = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
-        btn.disabled = true;
-        nameDisplay.style.display = 'none';
-        
-        try {
-            const response = await fetch(`/api/stations/lookup?station_id=${stationId}`);
-            const data = await response.json();
-            
-            if (response.ok) {
-                // Show station name
-                nameDisplay.textContent = `Found: ${data.station_name}`;
-                nameDisplay.className = 'form-text text-success fw-bold mt-1';
-                nameDisplay.style.display = 'block';
-                
-                // Select state
-                if (data.au_state) {
-                    const stateEl = document.getElementById(btn.id === 'checkStationBtn' ? 'auState' : 'editAuState');
-                    if (stateEl) stateEl.value = data.au_state;
-                }
-                
-                // Pre-select fuel types
-                // First uncheck all
-                document.querySelectorAll('#fuelTypesContainer input[type="checkbox"]').forEach(cb => cb.checked = false);
-                
-                // Check available ones
-                let foundCount = 0;
-                if (data.available_fuel_types && data.available_fuel_types.length > 0) {
-                    data.available_fuel_types.forEach(ft => {
-                        const cb = document.getElementById(`fuelTypesContainer_${ft}`);
-                        if (cb) {
-                            cb.checked = true;
-                            foundCount++;
-                        }
-                    });
-                    
-                    if (foundCount > 0) {
-                        showToast(`Found and selected ${foundCount} fuel types`, 'success');
-                    } else {
-                        showToast('Station found but fuel types not matching available options', 'warning');
-                    }
-                } else {
-                     showToast('Station found but no active prices/fuel types currently', 'warning');
-                }
-            } else {
-                nameDisplay.textContent = data.error || 'Station not found or no data available';
-                nameDisplay.className = 'form-text text-danger fw-bold mt-1';
-                nameDisplay.style.display = 'block';
-            }
-        } catch (error) {
-            console.error('Lookup error:', error);
-            showToast('Failed to lookup station', 'error');
-        } finally {
-            btn.innerHTML = originalBtnContent;
-            btn.disabled = false;
-        }
+    function lookupStation() {
+        return lookupStationForMode('add');
     }
 
-    async function lookupEditStation() {
-        const stationId = document.getElementById('editStationId').value;
-        const btn = document.getElementById('checkEditStationBtn');
-        const nameDisplay = document.getElementById('editStationNameDisplay');
-        
-        if (!stationId) return;
-        
-        // Show loading state
+    function lookupEditStation() {
+        return lookupStationForMode('edit');
+    }
+
+    async function lookupStationForMode(mode) {
+        const isAdd = mode === 'add';
+        const stationId = document.getElementById(isAdd ? 'stationId' : 'editStationId').value;
+        const btn = document.getElementById(isAdd ? 'checkStationBtn' : 'checkEditStationBtn');
+        const nameDisplay = document.getElementById(isAdd ? 'stationNameDisplay' : 'editStationNameDisplay');
+        const containerId = isAdd ? 'fuelTypesContainer' : 'editFuelTypesContainer';
+        const stateEl = document.getElementById(isAdd ? 'auState' : 'editAuState');
+
+        if (!stationId) {
+            if (isAdd) showToast('Please enter a station ID', 'warning');
+            return;
+        }
+
         const originalBtnContent = btn.innerHTML;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
         btn.disabled = true;
         nameDisplay.style.display = 'none';
-        
+
         try {
-            const response = await fetch(`/api/stations/lookup?station_id=${stationId}`);
+            const response = await fetch(`/api/stations/lookup?station_id=${encodeURIComponent(stationId)}`);
             const data = await response.json();
-            
+
             if (response.ok) {
-                // Show station name
+                if (isAdd) {
+                    lookedUpAddStationName = data.station_name || '';
+                } else {
+                    lookedUpEditStationName = data.station_name || '';
+                }
                 nameDisplay.textContent = `Found: ${data.station_name}`;
                 nameDisplay.className = 'form-text text-success fw-bold mt-1';
                 nameDisplay.style.display = 'block';
-                
-                // Select state
-                if (data.au_state) {
-                    const stateEl = document.getElementById(btn.id === 'checkStationBtn' ? 'auState' : 'editAuState');
-                    if (stateEl) stateEl.value = data.au_state;
+
+                if (data.au_state && stateEl) {
+                    stateEl.value = data.au_state;
                 }
-                
-                // Pre-select fuel types
-                // First uncheck all
-                document.querySelectorAll('#editFuelTypesContainer input[type="checkbox"]').forEach(cb => cb.checked = false);
-                
-                // Check available ones
+
+                document.querySelectorAll(`#${containerId} input[type="checkbox"]`).forEach(cb => cb.checked = false);
+
                 let foundCount = 0;
                 if (data.available_fuel_types && data.available_fuel_types.length > 0) {
                     data.available_fuel_types.forEach(ft => {
-                        const cb = document.getElementById(`editFuelTypesContainer_${ft}`);
+                        const cb = document.getElementById(`${containerId}_${ft}`);
                         if (cb) {
                             cb.checked = true;
                             foundCount++;
                         }
                     });
-                    
+
                     if (foundCount > 0) {
                         showToast(`Found and selected ${foundCount} fuel types`, 'success');
                     } else {
                         showToast('Station found but fuel types not matching available options', 'warning');
                     }
                 } else {
-                     showToast('Station found but no active prices/fuel types currently', 'warning');
+                    showToast('Station found but no active prices/fuel types currently', 'warning');
                 }
             } else {
                 nameDisplay.textContent = data.error || 'Station not found or no data available';
@@ -489,6 +428,7 @@
                 body: JSON.stringify({
                     station_id: stationId,
                     au_state: auState,
+                    station_name: lookedUpAddStationName,
                     fuel_types: selectedFuelTypes,
                     discount: discount
                 })
@@ -502,16 +442,18 @@
             
             showToast('Station added successfully', 'success');
             addStationModal.hide();
+            lookedUpAddStationName = '';
             document.getElementById('addStationForm').reset();
             displayFuelTypeCheckboxes('fuelTypesContainer', []);
             loadStations();
         } catch (error) {
             console.error('Error adding station:', error);
-            showToast('Failed to add station', 'error');
+            showToast(error.message || 'Failed to add station', 'error');
         }
     }
     
     function editStation(station) {
+        lookedUpEditStationName = station.station_name || '';
         document.getElementById('editStationId').value = station.station_id;
         document.getElementById('editStationIdDisplay').value = station.station_id;
         document.getElementById('editAuState').value = station.au_state || 'NSW';
@@ -539,6 +481,7 @@
                 },
                 body: JSON.stringify({
                     au_state: auState,
+                    station_name: lookedUpEditStationName,
                     fuel_types: selectedFuelTypes,
                     discount: discount
                 })

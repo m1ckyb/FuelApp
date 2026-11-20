@@ -10,7 +10,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import schedule
 from croniter import croniter
 
 from .config import Config, setup_logging
@@ -48,6 +47,13 @@ class FuelApp:
             bucket=config.influxdb_bucket
         )
         self.mqtt = MQTTClient(config)
+        self._mqtt_sig = (
+            config.mqtt_broker,
+            config.mqtt_port,
+            config.mqtt_user,
+            config.mqtt_password,
+            config.mqtt_discovery_prefix,
+        )
         self.notifications = DiscordClient(config.discord_webhook_url)
         self.connected = False
         self.last_prices = {}
@@ -75,6 +81,20 @@ class FuelApp:
                 self.fetcher.client_id = self.config.fuel_api_client_id
                 self.fetcher.client_secret = self.config.fuel_api_client_secret
                 self.notifications.webhook_url = self.config.discord_webhook_url
+                # Re-initialize MQTT client if broker settings changed in DB
+                new_mqtt_sig = (
+                    self.config.mqtt_broker,
+                    self.config.mqtt_port,
+                    self.config.mqtt_user,
+                    self.config.mqtt_password,
+                    self.config.mqtt_discovery_prefix,
+                )
+                if new_mqtt_sig != self._mqtt_sig:
+                    _LOGGER.info("MQTT configuration changed, reconnecting client...")
+                    if self.mqtt:
+                        self.mqtt.close()
+                    self.mqtt = MQTTClient(self.config)
+                    self._mqtt_sig = new_mqtt_sig
             except Exception as e:
                 _LOGGER.error("Failed to reload configuration: %s", e)
 
@@ -112,6 +132,12 @@ class FuelApp:
             station_updates = []
             fuel_types = fuel_types_by_station.get(station_id, [])
             station_info = data.stations.get(station_id)
+            if station_info and self.config.db:
+                self.config.db.update_station_metadata(
+                    station_id,
+                    station_info.name,
+                    getattr(station_info, 'address', '') or '',
+                )
             discount = discounts_by_station.get(station_id, 0.0)
             
             for fuel_type in fuel_types:
@@ -157,11 +183,11 @@ class FuelApp:
             if station_updates:
                 updates_by_station[station_id] = station_updates
 
-        # Compute average prices for monitored stations unconditionally for MQTT
+        # Compute average prices for monitored stations & active fuel types unconditionally for MQTT
         avg_prices = {}
         avg_counts = {}
         for (sid, ftype), price in self.last_prices.items():
-            if sid in station_ids:
+            if ftype in fuel_types_by_station.get(sid, []):
                 avg_prices[ftype] = avg_prices.get(ftype, 0.0) + price
                 avg_counts[ftype] = avg_counts.get(ftype, 0) + 1
                 
@@ -304,57 +330,45 @@ class FuelApp:
         # Run once immediately
         self.fetch_and_store()
 
-        # Main loop
+        # Main loop (supports dynamic switching between cron and interval modes)
         global running
+        last_tz = self.config.timezone
         try:
             while running:
+                # Re-apply timezone if updated in DB
+                if self.config.timezone and self.config.timezone != last_tz:
+                    import os
+                    os.environ['TZ'] = self.config.timezone
+                    if hasattr(time, 'tzset'):
+                        time.tzset()
+                    last_tz = self.config.timezone
+                    _LOGGER.info("Timezone updated to %s", self.config.timezone)
+
                 if self.config.cron_schedule:
                     # Cron mode
                     try:
                         now = datetime.now()
-                        iter = croniter(self.config.cron_schedule, now)
-                        next_run = iter.get_next(datetime)
+                        cron_iter = croniter(self.config.cron_schedule, now)
+                        next_run = cron_iter.get_next(datetime)
                         sleep_seconds = (next_run - now).total_seconds()
-                        
                         _LOGGER.info("Next run scheduled for %s (Cron: %s)", next_run, self.config.cron_schedule)
-                        
-                        # Sleep in small chunks to allow graceful shutdown
-                        while sleep_seconds > 0 and running:
-                            sleep_chunk = min(sleep_seconds, 1.0)
-                            time.sleep(sleep_chunk)
-                            sleep_seconds -= sleep_chunk
-                            
-                        if running:
-                            self.fetch_and_store()
-                            
                     except Exception as e:
                         _LOGGER.error("Error in cron scheduling: %s", e)
-                        time.sleep(60) # Prevent tight loop on error
+                        sleep_seconds = 60  # Prevent tight loop on error
                 else:
-                    # Interval mode (legacy)
-                    interval = self.config.poll_interval
-                    # Clear existing jobs to prevent duplicates if logic changes
-                    schedule.clear()
-                    schedule.every(interval).minutes.do(self.fetch_and_store)
-                    
+                    # Interval mode
+                    interval = max(1, int(self.config.poll_interval or 60))
+                    sleep_seconds = interval * 60
                     _LOGGER.info("Next run in %d minutes", interval)
-                    
-                    # Run pending jobs
-                    # Note: schedule.run_pending() checks if it's time to run.
-                    # We need to loop.
-                    
-                    # Since we just ran fetch_and_store, the next one is in 'interval' minutes.
-                    # schedule library is good for "every X minutes", but we need to keep the loop running.
-                    # But wait, if config changes, we might need to reload?
-                    # For now, let's assume config doesn't change dynamically in this process 
-                    # (it requires restart or we need to reload config in loop).
-                    # The original code just had a loop with schedule.run_pending().
-                    
-                    while running:
-                        schedule.run_pending()
-                        time.sleep(1)
-                        # TODO: check if we should switch to cron mode if config reloaded?
-                        # For simplicity, we stick to the selected mode at startup.
+
+                # Sleep in small chunks to allow graceful shutdown
+                while sleep_seconds > 0 and running:
+                    sleep_chunk = min(sleep_seconds, 1.0)
+                    time.sleep(sleep_chunk)
+                    sleep_seconds -= sleep_chunk
+
+                if running:
+                    self.fetch_and_store()
                         
         except KeyboardInterrupt:
             _LOGGER.info("Keyboard interrupt received")

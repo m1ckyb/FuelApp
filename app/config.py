@@ -19,9 +19,6 @@ _LOGGER = logging.getLogger(__name__)
 
 # --- Constants ---
 
-# Data key for fuel station coordinator
-DATA_NSW_FUEL_STATION = "nsw_fuel_station"
-
 # Allowed fuel types
 ALLOWED_FUEL_TYPES = [
     "E10",
@@ -86,6 +83,7 @@ class ConfigDatabase:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn = conn
         return self._local.conn
 
@@ -141,6 +139,8 @@ class ConfigDatabase:
                 au_state TEXT DEFAULT 'NSW',
                 fuel_types TEXT NOT NULL,
                 discount REAL DEFAULT 0.0,
+                station_name TEXT DEFAULT '',
+                station_address TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -207,6 +207,17 @@ class ConfigDatabase:
         except sqlite3.OperationalError:
             # Column already exists
             pass
+
+        # Add station_name and station_address columns if they don't exist (for migration)
+        for col in ("station_name", "station_address"):
+            try:
+                cursor.execute(f"ALTER TABLE stations ADD COLUMN {col} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+
+        # Create indexes for foreign keys / frequent lookups
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_webauthn_user_id ON webauthn_credentials(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_alerts_station_id ON price_alerts(station_id)")
         
         # Check if schema exists
         cursor.execute("SELECT version FROM schema_version WHERE version = ?", (SCHEMA_VERSION,))
@@ -284,7 +295,9 @@ class ConfigDatabase:
             return []
         
         cursor = self.conn.cursor()
-        cursor.execute("SELECT station_id, au_state, fuel_types, discount FROM stations")
+        cursor.execute(
+            "SELECT station_id, au_state, fuel_types, discount, station_name, station_address FROM stations"
+        )
         
         stations = []
         for row in cursor.fetchall():
@@ -292,31 +305,34 @@ class ConfigDatabase:
                 'station_id': row['station_id'],
                 'au_state': row['au_state'] or 'NSW',
                 'fuel_types': json.loads(row['fuel_types']),
-                'discount': row['discount'] if row['discount'] is not None else 0.0
+                'discount': row['discount'] if row['discount'] is not None else 0.0,
+                'station_name': row['station_name'] or '',
+                'station_address': row['station_address'] or '',
             })
         return stations
 
-    def add_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW', discount: float = 0.0) -> bool:
-        """Add a new station.
-        
-        Args:
-            station_id: Station ID
-            fuel_types: List of fuel types
-            au_state: Australian state (NSW or TAS)
-            discount: Fuel discount in cents
-            
-        Returns:
-            True if successful, False otherwise
-        """
+    def add_station(
+        self,
+        station_id: int,
+        fuel_types: List[str],
+        au_state: str = 'NSW',
+        discount: float = 0.0,
+        station_name: str = '',
+        station_address: str = '',
+    ) -> bool:
+        """Add a new station."""
         if not self.conn:
             return False
         
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
-                INSERT INTO stations (station_id, au_state, fuel_types, discount, created_at, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (station_id, au_state, json.dumps(fuel_types), discount))
+                INSERT INTO stations (
+                    station_id, au_state, fuel_types, discount,
+                    station_name, station_address, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (station_id, au_state, json.dumps(fuel_types), discount, station_name, station_address))
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
@@ -326,32 +342,57 @@ class ConfigDatabase:
             _LOGGER.error("Failed to add station %d: %s", station_id, exc)
             return False
 
-    def update_station(self, station_id: int, fuel_types: List[str], au_state: str = 'NSW', discount: float = 0.0) -> bool:
-        """Update a station's fuel types, state, and discount.
-        
-        Args:
-            station_id: Station ID
-            fuel_types: List of fuel types
-            au_state: Australian state
-            discount: Fuel discount in cents
-            
-        Returns:
-            True if successful, False otherwise
-        """
+    def update_station(
+        self,
+        station_id: int,
+        fuel_types: List[str],
+        au_state: str = 'NSW',
+        discount: float = 0.0,
+        station_name: Optional[str] = None,
+        station_address: Optional[str] = None,
+    ) -> bool:
+        """Update a station's fuel types, state, discount, and optional metadata."""
         if not self.conn:
             return False
         
         try:
             cursor = self.conn.cursor()
-            cursor.execute("""
-                UPDATE stations
-                SET fuel_types = ?, au_state = ?, discount = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE station_id = ?
-            """, (json.dumps(fuel_types), au_state, discount, station_id))
+            if station_name is not None or station_address is not None:
+                cursor.execute("""
+                    UPDATE stations
+                    SET fuel_types = ?, au_state = ?, discount = ?,
+                        station_name = COALESCE(?, station_name),
+                        station_address = COALESCE(?, station_address),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE station_id = ?
+                """, (json.dumps(fuel_types), au_state, discount, station_name, station_address, station_id))
+            else:
+                cursor.execute("""
+                    UPDATE stations
+                    SET fuel_types = ?, au_state = ?, discount = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE station_id = ?
+                """, (json.dumps(fuel_types), au_state, discount, station_id))
             self.conn.commit()
             return cursor.rowcount > 0
         except Exception as exc:
             _LOGGER.error("Failed to update station %d: %s", station_id, exc)
+            return False
+
+    def update_station_metadata(self, station_id: int, station_name: str, station_address: str = '') -> bool:
+        """Update cached station name and address in SQLite."""
+        if not self.conn:
+            return False
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE stations
+                SET station_name = ?, station_address = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE station_id = ?
+            """, (station_name or '', station_address or '', station_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as exc:
+            _LOGGER.error("Failed to update metadata for station %d: %s", station_id, exc)
             return False
 
     def delete_station(self, station_id: int) -> bool:
@@ -448,7 +489,7 @@ class ConfigDatabase:
             return False
 
     def check_rate_limit(self, key: str, max_attempts: int = 5, window_seconds: int = 60) -> bool:
-        """Check and update a rate limit entry in the SQLite database.
+        """Check and update a rate limit entry atomically in the SQLite database.
         
         Returns:
             True if within limits, False if rate limit exceeded.
@@ -460,6 +501,14 @@ class ConfigDatabase:
         now = time.time()
         try:
             cursor = self.conn.cursor()
+            # Acquire write lock immediately so concurrent workers cannot race past the limit
+            cursor.execute("BEGIN IMMEDIATE")
+            
+            # Periodically prune stale entries older than 1 hour to prevent unbounded growth
+            cursor.execute(
+                "DELETE FROM login_attempts WHERE updated_at < datetime('now', '-1 hour')"
+            )
+            
             cursor.execute("SELECT attempts FROM login_attempts WHERE key = ?", (key,))
             row = cursor.fetchone()
             
@@ -474,7 +523,6 @@ class ConfigDatabase:
             attempts = [t for t in attempts if now - t < window_seconds]
             
             if len(attempts) >= max_attempts:
-                # Still write the filtered list to clean up expired entries
                 cursor.execute("""
                     INSERT INTO login_attempts (key, attempts, updated_at)
                     VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -496,6 +544,10 @@ class ConfigDatabase:
             self.conn.commit()
             return True
         except Exception as exc:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
             _LOGGER.error("Failed to check rate limit in DB for %s: %s", key, exc)
             return True  # Fail-safe to avoid blocking users on DB failure
 
@@ -536,6 +588,31 @@ class ConfigDatabase:
             return None
         except Exception as exc:
             _LOGGER.error("Failed to create user %s: %s", username, exc)
+            return None
+
+    def create_first_user(self, username: str, password_hash: str) -> Optional[int]:
+        """Atomically create the initial admin user only if no users exist."""
+        if not self.conn:
+            return None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute("SELECT COUNT(*) FROM users")
+            if cursor.fetchone()[0] > 0:
+                self.conn.rollback()
+                return None
+            cursor.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (username, password_hash)
+            )
+            self.conn.commit()
+            return cursor.lastrowid
+        except Exception as exc:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _LOGGER.error("Failed to create first user %s: %s", username, exc)
             return None
 
     def update_password(self, user_id: int, password_hash: str) -> bool:
@@ -807,10 +884,11 @@ class Config:
             True if successful, False otherwise
         """
         try:
-            self.db = ConfigDatabase(self.db_path)
-            if not self.db.connect():
-                _LOGGER.error("Failed to connect to database")
-                return False
+            if self.db is None:
+                self.db = ConfigDatabase(self.db_path)
+                if not self.db.connect():
+                    _LOGGER.error("Failed to connect to database")
+                    return False
             
             # Load settings
             settings = self.db.get_all_settings()
@@ -878,39 +956,8 @@ class Config:
             True if successful, False otherwise
         """
         try:
-            if not self.db:
-                self.db = ConfigDatabase(self.db_path)
-                if not self.db.connect():
-                    return False
-            
-            # Save settings
-            self.db.set_setting('influxdb_url', self.influxdb_url)
-            self.db.set_setting('influxdb_token', self.influxdb_token)
-            self.db.set_setting('influxdb_org', self.influxdb_org)
-            self.db.set_setting('influxdb_bucket', self.influxdb_bucket)
-            
-            self.db.set_setting('fuel_api_client_id', self.fuel_api_client_id)
-            self.db.set_setting('fuel_api_client_secret', self.fuel_api_client_secret)
-            
-            self.db.set_setting('discord_webhook_url', self.discord_webhook_url)
-            self.db.set_setting('discord_price_threshold', str(self.discord_price_threshold))
-            
-            # Save MQTT settings
-            self.db.set_setting('mqtt_broker', self.mqtt_broker)
-            self.db.set_setting('mqtt_port', str(self.mqtt_port))
-            self.db.set_setting('mqtt_user', self.mqtt_user)
-            self.db.set_setting('mqtt_password', self.mqtt_password)
-            self.db.set_setting('mqtt_discovery_prefix', self.mqtt_discovery_prefix)
-            
-            self.db.set_setting('poll_interval', str(self.poll_interval))
-            self.db.set_setting('cron_schedule', self.cron_schedule)
-            self.db.set_setting('timezone', self.timezone)
-            self.db.set_setting('log_level', self.log_level)
-            
-            # Auth settings
-            self.db.set_setting('auth_enabled', 'true' if self.auth_enabled else 'false')
-            self.db.set_setting('webauthn_rp_id', self.webauthn_rp_id)
-            self.db.set_setting('webauthn_rp_name', self.webauthn_rp_name)
+            if not self.save_to_database():
+                return False
 
             # Save stations
             for station in self.stations:

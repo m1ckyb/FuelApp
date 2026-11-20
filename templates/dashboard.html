@@ -151,6 +151,7 @@
 <script>
     let priceChart = null;
     let stationsData = [];
+    let averageTrendsData = {};
     
     // View State
     let currentGrouping = 'station'; // 'station' or 'fuel_type'
@@ -167,25 +168,45 @@
     let stationModalChart = null;
     let currentStationModalId = null;
     
-    // Helper function to escape HTML to prevent XSS
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-    
     // Load current prices on page load
     document.addEventListener('DOMContentLoaded', function() {
-        loadCurrentPrices();
         priceHistoryModal = new bootstrap.Modal(document.getElementById('priceHistoryModal'));
         stationPriceHistoryModal = new bootstrap.Modal(document.getElementById('stationPriceHistoryModal'));
+
+        // Register chart filter listeners once to prevent duplicate listeners on refresh
+        document.getElementById('chartStation').addEventListener('change', updateFuelTypeOptions);
+        document.getElementById('chartFuelType').addEventListener('change', loadPriceHistory);
+        document.getElementById('chartDays').addEventListener('change', loadPriceHistory);
+
+        // Delegated click handlers for station & fuel price history cards (avoids inline JS string injection)
+        document.addEventListener('click', function(e) {
+            const fuelCard = e.target.closest('[data-history-fuel]');
+            if (fuelCard) {
+                openPriceHistoryModal(
+                    fuelCard.dataset.stationId,
+                    fuelCard.dataset.stationName,
+                    fuelCard.dataset.historyFuel
+                );
+                return;
+            }
+            const stationLink = e.target.closest('[data-station-history-id]');
+            if (stationLink) {
+                e.preventDefault();
+                openStationHistoryModal(
+                    stationLink.dataset.stationHistoryId,
+                    stationLink.dataset.stationName
+                );
+            }
+        });
+
+        loadCurrentPrices();
     });
 
     function setGrouping(grouping) {
         currentGrouping = grouping;
         const label = grouping === 'station' ? 'Station' : 'Fuel Type';
         document.getElementById('groupLabel').textContent = `Group: ${label}`;
-        displayPrices(stationsData);
+        displayPrices(stationsData, averageTrendsData);
     }
 
     function setSorting(sorting) {
@@ -194,7 +215,7 @@
         if (sorting === 'price_asc') label = 'Price (Low to High)';
         if (sorting === 'price_desc') label = 'Price (High to Low)';
         document.getElementById('sortLabel').textContent = `Sort: ${label}`;
-        displayPrices(stationsData);
+        displayPrices(stationsData, averageTrendsData);
     }
 
     function openStationHistoryModal(stationId, stationName) {
@@ -415,8 +436,8 @@
             }
             
             stationsData = data.prices;
-            const averageTrends = data.average_trends || {};
-            displayPrices(data.prices, averageTrends);
+            averageTrendsData = data.average_trends || {};
+            displayPrices(data.prices, averageTrendsData);
             populateChartFilters(data.prices);
             
             if (data.fetched_at) {
@@ -510,8 +531,8 @@
                 <div class="col-12">
                     <div class="card">
                         <div class="card-header">
-                            <a href="javascript:void(0)" class="text-decoration-none text-white" 
-                               onclick="openStationHistoryModal('0', 'Average Prices')">
+                            <a href="#" class="text-decoration-none text-white" 
+                               data-station-history-id="0" data-station-name="Average Prices">
                                 <i class="bi bi-calculator"></i> Average Prices
                             </a>
                         </div>
@@ -525,7 +546,7 @@
                 avgHtml += `
                     <div class="col-6 col-sm-4 col-md flex-grow-1" style="min-width: 140px;">
                         <div class="price-card h-100" style="cursor: pointer; transition: transform 0.2s;" 
-                             onclick="openPriceHistoryModal('0', 'Average Prices', '${escapeHtml(ft)}')"
+                             data-station-id="0" data-station-name="Average Prices" data-history-fuel="${escapeHtml(ft)}"
                              onmouseover="this.style.transform='scale(1.05)'" 
                              onmouseout="this.style.transform='scale(1)'">
                             <div class="price-label">${escapeHtml(ft)}</div>
@@ -570,8 +591,9 @@
                         <div class="card">
                             <div class="card-header">
                                 <div class="station-name">
-                                    <a href="javascript:void(0)" class="text-decoration-none text-white" 
-                                       onclick="openStationHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}')">
+                                    <a href="#" class="text-decoration-none text-white" 
+                                       data-station-history-id="${escapeHtml(station.station_id)}"
+                                       data-station-name="${escapeHtml(station.station_name)}">
                                         ${escapeHtml(station.station_name)}
                                     </a>
                                     ${discountBadge}
@@ -599,7 +621,9 @@
                         html += `
                             <div class="col-6 col-sm-4 col-md flex-grow-1" style="min-width: 180px;">
                                 <div class="price-card h-100" style="cursor: pointer; transition: transform 0.2s;" 
-                                     onclick="openPriceHistoryModal('${station.station_id}', '${escapeHtml(station.station_name).replace(/'/g, "\\'")}', '${fuelType}')"
+                                     data-station-id="${escapeHtml(station.station_id)}"
+                                     data-station-name="${escapeHtml(station.station_name)}"
+                                     data-history-fuel="${escapeHtml(fuelType)}"
                                      onmouseover="this.style.transform='scale(1.05)'" 
                                      onmouseout="this.style.transform='scale(1)'">
                                     <div class="price-label">${escapeHtml(fuelType)}</div>
@@ -640,7 +664,7 @@
             const sortedFuelTypes = Object.keys(fuelGroups).sort();
             
             for (const ft of sortedFuelTypes) {
-                html += `<div class="col-12 mt-4 mb-2"><h3 class="h5 border-bottom pb-2" style="border-color: var(--border-color) !important;">${ft}</h3></div>`;
+                html += `<div class="col-12 mt-4 mb-2"><h3 class="h5 border-bottom pb-2" style="border-color: var(--border-color) !important;">${escapeHtml(ft)}</h3></div>`;
                 
                 let groupData = fuelGroups[ft];
                 if (currentSorting === 'name') {
@@ -660,7 +684,9 @@
                     html += `
                         <div class="col-6 col-md-4 col-lg-3">
                             <div class="price-card h-100" style="cursor: pointer;" 
-                                 onclick="openPriceHistoryModal('${item.station_id}', '${escapeHtml(item.station_name).replace(/'/g, "\\'")}', '${ft}')">
+                                 data-station-id="${escapeHtml(item.station_id)}"
+                                 data-station-name="${escapeHtml(item.station_name)}"
+                                 data-history-fuel="${escapeHtml(ft)}">
                                 <h6 class="text-white mb-1 text-truncate" title="${escapeHtml(item.station_name)}">${escapeHtml(item.station_name)}</h6>
                                 <p class="small text-secondary mb-2 text-truncate">${escapeHtml(item.station_address)} ${discountBadge}</p>
                                 <div class="price-value" style="font-size: 1.5rem;">
@@ -696,11 +722,6 @@
             option.textContent = station.station_name;
             stationSelect.appendChild(option);
         }
-        
-        // Add event listeners
-        stationSelect.addEventListener('change', updateFuelTypeOptions);
-        fuelTypeSelect.addEventListener('change', loadPriceHistory);
-        document.getElementById('chartDays').addEventListener('change', loadPriceHistory);
         
         updateFuelTypeOptions();
     }
@@ -792,7 +813,6 @@
         
         // Group data by station_id and fuel_type
         const groups = {};
-        const timestamps = new Set();
         
         history.forEach(item => {
             const key = `${item.station_id}_${item.fuel_type}`;

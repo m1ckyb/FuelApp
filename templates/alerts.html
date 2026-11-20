@@ -167,7 +167,7 @@
                     <div class="fw-bold">${escapeHtml(alert.station_name)}</div>
                     <div class="small text-secondary">ID: ${alert.station_id}</div>
                 </td>
-                <td><span class="badge bg-secondary">${alert.fuel_type}</span></td>
+                <td><span class="badge bg-secondary">${escapeHtml(alert.fuel_type)}</span></td>
                 <td><span class="fw-bold text-accent">+${alert.threshold.toFixed(1)}¢</span></td>
                 <td>
                     <div class="form-check form-switch">
@@ -256,17 +256,6 @@
         } catch (error) {
             showToast('Error deleting alert', 'error');
         }
-    }
-
-    function escapeHtml(text) {
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return text.replace(/[&<>"']/g, m => map[m]);
     }
 </script>
 

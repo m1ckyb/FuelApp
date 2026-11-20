@@ -2,6 +2,7 @@
 
 import json
 import logging
+import secrets
 from typing import Optional, Dict, Any
 
 import paho.mqtt.client as mqtt
@@ -30,8 +31,11 @@ class MQTTClient:
         """Initialize the Paho MQTT client."""
         try:
             # Generate a unique client ID
-            client_id = f"fuelapp_{self.config.mqtt_discovery_prefix}"
-            self.client = mqtt.Client(client_id=client_id)
+            client_id = f"fuelapp_{self.config.mqtt_discovery_prefix}_{secrets.token_hex(4)}"
+            self.client = mqtt.Client(
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                client_id=client_id
+            )
             
             if self.config.mqtt_user and self.config.mqtt_password:
                 self.client.username_pw_set(
@@ -59,18 +63,18 @@ class MQTTClient:
         except Exception as e:
             _LOGGER.error("Failed to initialize MQTT client: %s", e)
 
-    def _on_connect(self, client, userdata, flags, rc):
+    def _on_connect(self, client, userdata, flags, reason_code, properties):
         """Handle connection established."""
-        if rc == 0:
+        if not reason_code.is_failure:
             _LOGGER.info("Connected to MQTT broker")
             self.connected = True
         else:
-            _LOGGER.error("Failed to connect to MQTT broker, return code %d", rc)
+            _LOGGER.error("Failed to connect to MQTT broker, reason: %s", reason_code)
             self.connected = False
 
-    def _on_disconnect(self, client, userdata, rc):
+    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         """Handle disconnection."""
-        _LOGGER.info("Disconnected from MQTT broker (rc=%d)", rc)
+        _LOGGER.info("Disconnected from MQTT broker (reason=%s)", reason_code)
         self.connected = False
 
     def publish_discovery(self, station_id: int, station_name: str, fuel_types: list[str], 
@@ -178,20 +182,23 @@ class MQTTClient:
             Tuple of (success, message)
         """
         try:
-            client = mqtt.Client(client_id="fuelapp_test_connection")
+            client = mqtt.Client(
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                client_id=f"fuelapp_test_{secrets.token_hex(4)}"
+            )
             if user and password:
                 client.username_pw_set(user, password)
             
-            # Use a mutable list to store result from callback
+            # Use a mutable dict to store result from callback
             result = {'connected': False, 'error': 'Connection timed out'}
             
-            def on_connect(client, userdata, flags, rc):
-                if rc == 0:
+            def on_connect(client, userdata, flags, reason_code, properties):
+                if not reason_code.is_failure:
                     result['connected'] = True
                     result['error'] = None
                 else:
                     result['connected'] = False
-                    result['error'] = f"Connection refused with code {rc}"
+                    result['error'] = f"Connection refused: {reason_code}"
             
             client.on_connect = on_connect
             

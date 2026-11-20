@@ -397,15 +397,15 @@
             </div>
             <div class="mb-3">
                 <span class="config-label">Cron Schedule</span>
-                <div class="config-value">${config.cron_schedule || '<span class="text-secondary small">Not set (using interval)</span>'}</div>
+                <div class="config-value">${config.cron_schedule ? escapeHtml(config.cron_schedule) : '<span class="text-secondary small">Not set (using interval)</span>'}</div>
             </div>
             <div class="mb-3">
                 <span class="config-label">Timezone</span>
-                <div class="config-value">${config.timezone}</div>
+                <div class="config-value">${escapeHtml(config.timezone)}</div>
             </div>
             <div class="mb-3">
                 <span class="config-label">Log Level</span>
-                <div class="config-value">${config.log_level}</div>
+                <div class="config-value">${escapeHtml(config.log_level)}</div>
             </div>
             <hr class="border-secondary opacity-25">
             <div class="mb-3">
@@ -864,13 +864,13 @@
                 <div class="mb-3">
                     <label for="cron_schedule" class="form-label">Cron Schedule</label>
                     <input type="text" class="form-control" id="cron_schedule" 
-                           value="${currentConfig.cron_schedule || ''}" placeholder="e.g. 0 */1 * * *">
+                           value="${escapeHtml(currentConfig.cron_schedule || '')}" placeholder="e.g. 0 */1 * * *">
                     <small class="text-secondary">Standard Cron format. Overrides Poll Interval.</small>
                 </div>
                 <div class="mb-3">
                     <label for="timezone" class="form-label">Timezone</label>
                     <input type="text" class="form-control" id="timezone" 
-                           value="${currentConfig.timezone}" required>
+                           value="${escapeHtml(currentConfig.timezone || '')}" required>
                     <small class="text-secondary">e.g. Australia/Sydney</small>
                 </div>
                 <div class="mb-3">
@@ -886,7 +886,7 @@
                 <div class="mb-3">
                     <label for="webauthn_rp_id" class="form-label">Passkey RP ID (Domain)</label>
                     <input type="text" class="form-control font-monospace" id="webauthn_rp_id" 
-                           value="${currentConfig.webauthn_rp_id}" required>
+                           value="${escapeHtml(currentConfig.webauthn_rp_id || '')}" required>
                     <small class="text-secondary">Base domain for authentication. Must match the domain users visit.</small>
                 </div>
                 <div class="d-flex gap-2">
@@ -1013,30 +1013,6 @@
             showToast('Failed to copy. Please copy manually.', 'error');
         }
     }
-    
-    function escapeHtml(text) {
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return text.replace(/[&<>"']/g, m => map[m]);
-    }
-
-    async function safeParseJSON(response) {
-        const text = await response.text();
-        try {
-            return JSON.parse(text);
-        } catch (e) {
-            console.error('Failed to parse JSON response. Raw text (first 200 chars):', text.substring(0, 200));
-            // Show a bit of the raw response to help debugging proxy issues
-            const snippet = text.substring(0, 100).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            throw new Error(`Invalid response (non-JSON). Server returned: "${snippet}..."`);
-        }
-    }
-
 
     async function createBackup() {
         const btn = document.getElementById('backupBtn');
@@ -1148,7 +1124,7 @@
             container.innerHTML = html;
         } catch (error) {
             console.error(error);
-            container.innerHTML = `<div class="text-danger small">${error.message}</div>`;
+            container.innerHTML = `<div class="text-danger small">${escapeHtml(error.message)}</div>`;
         }
     }
 
@@ -1255,21 +1231,5 @@
             showToast(error.message, 'error');
         }
     });
-
-    function base64urlToBytes(base64url) {
-        const padding = '='.repeat((4 - (base64url.length % 4)) % 4);
-        const base64 = (base64url + padding).replace(/-/g, '+').replace(/_/g, '/');
-        const rawData = window.atob(base64);
-        const outputArray = new Uint8Array(rawData.length);
-        for (let i = 0; i < rawData.length; ++i) {
-            outputArray[i] = rawData.charCodeAt(i);
-        }
-        return outputArray;
-    }
-
-    function bytesToBase64url(bytes) {
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
-        return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    }
 </script>
 {% endblock %}
