@@ -28,7 +28,7 @@ This application is based on the [Home Assistant NSW Fuel Station integration](h
 - Docker Compose V2
 
 ### Manual Installation
-- Python 3.12 or higher
+- Python 3.14 or higher
 - InfluxDB 2.x instance
 - **API Credentials**: You must register for an API key at the [NSW/TAS Fuel API Portal](https://api.nsw.gov.au/) to obtain a `Client ID` and `Client Secret`.
 
