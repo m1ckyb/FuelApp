@@ -22,7 +22,6 @@ from croniter import croniter
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.middleware.proxy_fix import ProxyFix
-from influxdb_client import InfluxDBClient
 from werkzeug.security import generate_password_hash, check_password_hash
 import webauthn
 from webauthn import (
@@ -46,11 +45,26 @@ from webauthn.helpers.structs import (
 )
 
 from .config import Config, ALLOWED_FUEL_TYPES, setup_logging
-from .data import FuelDataFetcher
+from .data import FuelDataFetcher, InfluxDBReader, is_safe_influx_identifier
 from .mqtt import MQTTClient
 from .notifications import DiscordClient, is_valid_discord_webhook_url
 
 _LOGGER = logging.getLogger(__name__)
+
+# Worker-scoped InfluxDB reader and short TTL cache for upstream station lookups
+influx_reader = InfluxDBReader()
+_LOOKUP_CACHE_TTL = 300  # 5 minutes
+_lookup_cache: dict[str, Any] = {'data': None, 'fetched_at': 0.0}
+
+
+def _compute_trend(current_val: float, price_history: list[float]) -> str:
+    """Determine price direction ('up', 'down', 'stable', 'unknown') from recent history."""
+    if not price_history:
+        return 'unknown'
+    for hist_price in price_history:
+        if abs(current_val - hist_price) > 0.001:
+            return 'up' if current_val > hist_price else 'down'
+    return 'stable'
 
 
 def _is_valid_http_url(url: str) -> bool:
@@ -128,6 +142,15 @@ def add_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "font-src 'self' https://cdn.jsdelivr.net; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
     # Cache control for API endpoints
     if request.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -615,11 +638,17 @@ def lookup_station():
     if not station_id:
         return jsonify({'error': 'station_id is required'}), 400
         
-    # For lookup, we try to fetch all stations (NSW and TAS) to find the ID
-    data = ftr.fetch_station_price_data([
-        {'station_id': station_id, 'au_state': 'NSW'},
-        {'station_id': station_id, 'au_state': 'TAS'}
-    ])
+    # Reuse cached NSW/TAS lookup data for 5 minutes to avoid repeated bulk API fetches
+    now = time.time()
+    data = _lookup_cache['data'] if (now - _lookup_cache['fetched_at'] < _LOOKUP_CACHE_TTL) else None
+    if data is None or station_id not in data.stations:
+        data = ftr.fetch_station_price_data([
+            {'station_id': station_id, 'au_state': 'NSW'},
+            {'station_id': station_id, 'au_state': 'TAS'}
+        ])
+        if data:
+            _lookup_cache['data'] = data
+            _lookup_cache['fetched_at'] = now
     if not data:
         return jsonify({'error': 'Failed to fetch data'}), 500
         
@@ -800,85 +829,28 @@ def get_current_prices():
             _LOGGER.error("Failed to fetch stations from DB: %s", e)
 
     # Decouple web UI from live API by reading current prices from InfluxDB first
-    class MockStation:
-        def __init__(self, code, name, address, au_state='NSW'):
-            self.code = code
-            self.name = name
-            self.address = address
-            self.au_state = au_state
-
-    class MockPrice:
-        def __init__(self, station_code, fuel_type, price, last_updated):
-            self.station_code = station_code
-            self.fuel_type = fuel_type
-            self.price = price
-            self.last_updated = last_updated
-
-    class MockStationPriceData:
-        def __init__(self):
-            self.stations = {}
-            self.prices = {}
-
-    data = MockStationPriceData()
     discounts_by_station = {
         s['station_id']: s.get('discount', 0.0)
         for s in stations_list
     }
+    data = None
     last_prices = {}
 
     if cfg:
         try:
-            with InfluxDBClient(
+            data, last_prices = influx_reader.get_current_and_recent_prices(
                 url=cfg.influxdb_url,
                 token=cfg.influxdb_token,
-                org=cfg.influxdb_org
-            ) as client:
-                query_api = client.query_api()
-                
-                # Single 30-day query sorted desc (limit 50 per series) provides both
-                # the latest price and historical prices for trend comparison.
-                query = f'from(bucket: "{cfg.influxdb_bucket}")'
-                query += ' |> range(start: -30d)'
-                query += ' |> filter(fn: (r) => r._measurement == "fuel_price")'
-                query += ' |> filter(fn: (r) => r._field == "price")'
-                query += ' |> sort(columns: ["_time"], desc: true)'
-                query += ' |> limit(n: 50)'
-                
-                tables = query_api.query(query)
-                
-                for table in tables:
-                    for record in table.records:
-                        sid = record.values.get('station_id')
-                        ft = record.values.get('fuel_type')
-                        price = record.get_value()
-                        sname = record.values.get('station_name') or f"Station {sid}"
-                        saddr = record.values.get('station_address') or ""
-                        
-                        if sid and ft:
-                            try:
-                                sid = int(sid)
-                                key = (sid, ft)
-                                if key not in last_prices:
-                                    last_prices[key] = []
-                                    if sid not in data.stations:
-                                        au_state = 'NSW'
-                                        for s in stations_list:
-                                            if s['station_id'] == sid:
-                                                au_state = s.get('au_state', 'NSW')
-                                                break
-                                        data.stations[sid] = MockStation(sid, sname, saddr, au_state)
-                                    # InfluxDB stores discounted price; reconstruct raw price for downstream
-                                    discount = discounts_by_station.get(sid, 0.0)
-                                    raw_price = price + discount
-                                    data.prices[key] = MockPrice(sid, ft, raw_price, record.get_time())
-                                last_prices[key].append(price)
-                            except ValueError:
-                                pass
+                org=cfg.influxdb_org,
+                bucket=cfg.influxdb_bucket,
+                stations_list=stations_list,
+                lookback_days=30,
+            )
         except Exception as e:
             _LOGGER.error("Failed to query InfluxDB for current prices: %s", e)
 
     # Fallback to live API only if InfluxDB has no cached data (e.g. fresh installation)
-    if not data.prices:
+    if not data or not data.prices:
         _LOGGER.warning("No price data in InfluxDB, falling back to live API fetch")
         data = ftr.fetch_station_price_data(stations_list)
         if not data:
@@ -886,6 +858,7 @@ def get_current_prices():
 
     # Filter for configured stations
     station_ids = [s['station_id'] for s in stations_list]
+    stations_by_id = {s['station_id']: s for s in stations_list}
     fuel_types_by_station = {
         s['station_id']: s['fuel_types'] 
         for s in stations_list
@@ -894,8 +867,9 @@ def get_current_prices():
     result = []
     for station_id in station_ids:
         station = data.stations.get(station_id)
-        if not station:
-            continue
+        db_station = stations_by_id.get(station_id, {})
+        station_name = station.name if station else (db_station.get('station_name') or f"Station {station_id}")
+        station_address = station.address if station else (db_station.get('station_address') or "")
         
         fuel_types = fuel_types_by_station.get(station_id, [])
         prices = {}
@@ -906,7 +880,6 @@ def get_current_prices():
         for fuel_type in fuel_types:
             price_obj = data.prices.get((station_id, fuel_type))
             if price_obj is not None:
-                # Apply discount to price
                 price_val = price_obj.price - discount
                 prices[fuel_type] = price_val
                 
@@ -915,31 +888,13 @@ def get_current_prices():
                 else:
                     _LOGGER.debug(f"No last_updated for {station_id} {fuel_type}")
                 
-                # Determine trend by finding the last price that was different
                 price_history = last_prices.get((station_id, fuel_type), [])
-                trend = 'unknown'
-                
-                if price_history:
-                    # Scan history for a price different from current
-                    for hist_price in price_history:
-                        # Use epsilon for float comparison
-                        if abs(price_val - hist_price) > 0.001:
-                            if price_val > hist_price:
-                                trend = 'up'
-                            else:
-                                trend = 'down'
-                            break
-                    
-                    # If we went through all history and found no difference, and history exists
-                    if trend == 'unknown' and price_history:
-                         trend = 'stable'
-                
-                trends[fuel_type] = trend
+                trends[fuel_type] = _compute_trend(price_val, price_history)
         
         result.append({
             'station_id': station_id,
-            'station_name': station.name,
-            'station_address': station.address,
+            'station_name': station_name,
+            'station_address': station_address,
             'discount': discount,
             'prices': prices,
             'last_updated': last_updated,
@@ -950,19 +905,9 @@ def get_current_prices():
     for key, price_history in last_prices.items():
         if key[0] == 0:
             fuel_type = key[1]
-            trend = 'unknown'
-            if price_history:
-                current_avg = price_history[0]
-                for hist_price in price_history[1:]:
-                    if abs(current_avg - hist_price) > 0.001:
-                        if current_avg > hist_price:
-                            trend = 'up'
-                        else:
-                            trend = 'down'
-                        break
-                if trend == 'unknown' and price_history:
-                    trend = 'stable'
-            average_trends[fuel_type] = trend
+            average_trends[fuel_type] = (
+                _compute_trend(price_history[0], price_history[1:]) if price_history else 'unknown'
+            )
 
     return jsonify({
         'prices': result,
@@ -975,7 +920,8 @@ def get_current_prices():
 @login_required
 def get_price_history():
     """Get historical fuel prices from InfluxDB."""
-    if not config:
+    cfg, _ = refresh_config_and_fetcher()
+    if not cfg:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
     # Get query parameters
@@ -1000,42 +946,15 @@ def get_price_history():
         return jsonify({'error': 'days must be between 1 and 365'}), 400
     
     try:
-        with InfluxDBClient(
-            url=config.influxdb_url,
-            token=config.influxdb_token,
-            org=config.influxdb_org
-        ) as client:
-            query_api = client.query_api()
-            
-            # Build Flux query
-            filters = ['r._measurement == "fuel_price"']
-            
-            if station_id is not None:
-                filters.append(f'r.station_id == "{station_id}"')
-            
-            if fuel_type:
-                filters.append(f'r.fuel_type == "{fuel_type}"')
-                
-            filter_expr = ' and '.join(filters)
-            query = f'from(bucket: "{config.influxdb_bucket}") |> range(start: -{days}d)'
-            query += f' |> filter(fn: (r) => {filter_expr})'
-            query += ' |> filter(fn: (r) => r._field == "price")'
-            if days > 30 and station_id is None and not fuel_type:
-                query += ' |> aggregateWindow(every: 6h, fn: mean, createEmpty: false)'
-            query += ' |> sort(columns: ["_time"])'
-            
-            tables = query_api.query(query)
-            
-            history = []
-            for table in tables:
-                for record in table.records:
-                    history.append({
-                        'time': record.get_time().isoformat(),
-                        'price': record.get_value(),
-                        'station_id': record.values.get('station_id'),
-                        'fuel_type': record.values.get('fuel_type')
-                    })
-        
+        history = influx_reader.get_price_history(
+            url=cfg.influxdb_url,
+            token=cfg.influxdb_token,
+            org=cfg.influxdb_org,
+            bucket=cfg.influxdb_bucket,
+            days=days,
+            station_id=station_id,
+            fuel_type=fuel_type,
+        )
         return jsonify({'history': history})
         
     except Exception as exc:
@@ -1171,78 +1090,86 @@ def get_config():
 @app.route('/api/config', methods=['PUT'])
 @login_required
 def update_config():
-    """Update configuration settings."""
-    if not config:
+    """Validate and atomically persist only submitted configuration settings."""
+    cfg, _ = refresh_config_and_fetcher()
+    if not cfg or not cfg.db:
         return jsonify({'error': 'Configuration not loaded'}), 500
     
     data = request.get_json(silent=True) or {}
+    updates: dict[str, str] = {}
     
-    # Update InfluxDB settings
+    # Validate InfluxDB settings
     if 'influxdb_url' in data:
         if not _is_valid_http_url(data['influxdb_url']):
             return jsonify({'error': 'Invalid InfluxDB URL (must be http:// or https://)'}), 400
-        config.influxdb_url = data['influxdb_url'].strip()
+        updates['influxdb_url'] = data['influxdb_url'].strip()
     
     if 'influxdb_token' in data and data['influxdb_token'] and data['influxdb_token'] != '***':
-        config.influxdb_token = data['influxdb_token']
+        updates['influxdb_token'] = str(data['influxdb_token'])
     
     if 'influxdb_org' in data:
-        config.influxdb_org = data['influxdb_org']
+        org_val = str(data['influxdb_org'] or '').strip()
+        if org_val and not is_safe_influx_identifier(org_val):
+            return jsonify({'error': 'Invalid InfluxDB organization name'}), 400
+        updates['influxdb_org'] = org_val
     
     if 'influxdb_bucket' in data:
-        config.influxdb_bucket = data['influxdb_bucket']
+        bucket_val = str(data['influxdb_bucket'] or '').strip()
+        if not is_safe_influx_identifier(bucket_val):
+            return jsonify({'error': 'Invalid InfluxDB bucket name'}), 400
+        updates['influxdb_bucket'] = bucket_val
 
-    # Update Fuel API settings
+    # Validate Fuel API settings
     if 'fuel_api_client_id' in data:
-        config.fuel_api_client_id = data['fuel_api_client_id']
+        updates['fuel_api_client_id'] = str(data['fuel_api_client_id'] or '').strip()
 
     if 'fuel_api_client_secret' in data and data['fuel_api_client_secret'] and data['fuel_api_client_secret'] != '***':
-        config.fuel_api_client_secret = data['fuel_api_client_secret']
+        updates['fuel_api_client_secret'] = str(data['fuel_api_client_secret'])
 
-    # Update Discord settings
+    # Validate Discord settings
     if 'discord_webhook_url' in data and data['discord_webhook_url'] and data['discord_webhook_url'] != '***':
         if not is_valid_discord_webhook_url(data['discord_webhook_url']):
             return jsonify({'error': 'Invalid Discord webhook URL'}), 400
-        config.discord_webhook_url = data['discord_webhook_url'].strip()
+        updates['discord_webhook_url'] = data['discord_webhook_url'].strip()
     
     if 'discord_price_threshold' in data:
         try:
             threshold = float(data['discord_price_threshold'])
             if threshold < 0:
                 return jsonify({'error': 'Discord price threshold cannot be negative'}), 400
-            config.discord_price_threshold = threshold
+            updates['discord_price_threshold'] = str(threshold)
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid Discord price threshold'}), 400
 
-    # Update MQTT settings
+    # Validate MQTT settings
     if 'mqtt_broker' in data:
-        config.mqtt_broker = str(data['mqtt_broker']).strip()
+        updates['mqtt_broker'] = str(data['mqtt_broker'] or '').strip()
     
     if 'mqtt_port' in data:
         try:
             port = int(data['mqtt_port'])
             if not (1 <= port <= 65535):
                 return jsonify({'error': 'MQTT port must be between 1 and 65535'}), 400
-            config.mqtt_port = port
+            updates['mqtt_port'] = str(port)
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid MQTT port'}), 400
             
     if 'mqtt_user' in data:
-        config.mqtt_user = data['mqtt_user']
+        updates['mqtt_user'] = str(data['mqtt_user'] or '')
         
     if 'mqtt_password' in data and data['mqtt_password'] and data['mqtt_password'] != '***':
-        config.mqtt_password = data['mqtt_password']
+        updates['mqtt_password'] = str(data['mqtt_password'])
         
     if 'mqtt_discovery_prefix' in data:
-        config.mqtt_discovery_prefix = data['mqtt_discovery_prefix']
+        updates['mqtt_discovery_prefix'] = str(data['mqtt_discovery_prefix'] or '').strip()
     
-    # Update app settings
+    # Validate app settings
     if 'poll_interval' in data:
         try:
             poll_interval = int(data['poll_interval'])
             if poll_interval < 1:
                 return jsonify({'error': 'Poll interval must be at least 1 minute'}), 400
-            config.poll_interval = poll_interval
+            updates['poll_interval'] = str(poll_interval)
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid poll interval'}), 400
             
@@ -1250,7 +1177,7 @@ def update_config():
         cron_val = str(data['cron_schedule'] or '').strip()
         if cron_val and not croniter.is_valid(cron_val):
             return jsonify({'error': 'Invalid cron schedule expression'}), 400
-        config.cron_schedule = cron_val
+        updates['cron_schedule'] = cron_val
         
     if 'timezone' in data:
         tz_val = str(data['timezone'] or '').strip()
@@ -1259,40 +1186,37 @@ def update_config():
                 ZoneInfo(tz_val)
             except (ZoneInfoNotFoundError, KeyError, ValueError):
                 return jsonify({'error': f'Invalid timezone: {tz_val}'}), 400
-        config.timezone = tz_val
+        updates['timezone'] = tz_val
     
     if 'log_level' in data:
         log_level = str(data['log_level']).upper()
         if log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
             return jsonify({'error': 'Invalid log level'}), 400
-        config.log_level = log_level
+        updates['log_level'] = log_level
 
-    # Auth settings
-    if 'auth_enabled' in data:
-        config.auth_enabled = str(data['auth_enabled']).lower() == 'true'
-    
+    # WebAuthn settings (auth_enabled cannot be disabled via API)
     if 'webauthn_rp_id' in data:
-        config.webauthn_rp_id = data['webauthn_rp_id']
+        updates['webauthn_rp_id'] = str(data['webauthn_rp_id'] or '').strip()
         
     if 'webauthn_rp_name' in data:
-        config.webauthn_rp_name = data['webauthn_rp_name']
+        updates['webauthn_rp_name'] = str(data['webauthn_rp_name'] or '').strip()
     
-    # Save to database
-    if config.save_to_database():
-        global fetcher
-        fetcher = FuelDataFetcher(
-            client_id=config.fuel_api_client_id,
-            client_secret=config.fuel_api_client_secret
-        )
-        return jsonify({'message': 'Configuration updated successfully'}), 200
-    else:
-        return jsonify({'error': 'Failed to save configuration'}), 500
+    # Persist only the submitted keys so concurrent workers never clobber unrelated settings
+    for key, value in updates.items():
+        if not cfg.db.set_setting(key, value):
+            return jsonify({'error': 'Failed to save configuration'}), 500
+
+    refresh_config_and_fetcher()
+    return jsonify({'message': 'Configuration updated successfully'}), 200
 
 
 @app.route('/api/config/discord/test', methods=['POST'])
 @login_required
 def test_discord_config():
     """Test Discord notification configuration."""
+    if not _check_rate_limit(f'discord_test:{current_user.id}', max_attempts=5, window_seconds=60):
+        return jsonify({'error': 'Too many test requests. Please try again later.'}), 429
+
     cfg, _ = refresh_config_and_fetcher()
     data = request.get_json(silent=True) or {}
     webhook_url = data.get('discord_webhook_url')
@@ -1322,6 +1246,9 @@ def test_discord_config():
 @login_required
 def test_mqtt_config():
     """Test MQTT configuration."""
+    if not _check_rate_limit(f'mqtt_test:{current_user.id}', max_attempts=5, window_seconds=60):
+        return jsonify({'error': 'Too many test requests. Please try again later.'}), 429
+
     cfg, _ = refresh_config_and_fetcher()
     data = request.get_json(silent=True) or {}
     

@@ -218,6 +218,7 @@ class ConfigDatabase:
         # Create indexes for foreign keys / frequent lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_webauthn_user_id ON webauthn_credentials(user_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_price_alerts_station_id ON price_alerts(station_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_updated_at ON login_attempts(updated_at)")
         
         # Check if schema exists
         cursor.execute("SELECT version FROM schema_version WHERE version = ?", (SCHEMA_VERSION,))

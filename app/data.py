@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Any
 
@@ -15,13 +16,42 @@ from nsw_tas_fuel import NSWFuelApiClient, NSWFuelApiClientError, Station
 
 _LOGGER = logging.getLogger(__name__)
 
+_SAFE_INFLUX_IDENT = re.compile(r'^[A-Za-z0-9_.\-]{1,128}$')
+
+
+def is_safe_influx_identifier(value: str) -> bool:
+    """Validate InfluxDB bucket/org identifiers to prevent Flux query injection."""
+    if not value or not isinstance(value, str):
+        return False
+    return bool(_SAFE_INFLUX_IDENT.match(value.strip()))
+
+
+@dataclass
+class CachedStation:
+    """Lightweight station representation reconstructed from InfluxDB/SQLite."""
+
+    code: int
+    name: str
+    address: str
+    au_state: str = "NSW"
+
+
+@dataclass
+class CachedPrice:
+    """Lightweight price representation reconstructed from InfluxDB."""
+
+    station_code: int
+    fuel_type: str
+    price: float
+    last_updated: Any
+
 
 @dataclass
 class StationPriceData:
     """Data structure for O(1) price and name lookups."""
 
-    stations: dict[int, Station]
-    prices: dict[tuple[int, str], Any]
+    stations: dict[int, Any] = field(default_factory=dict)
+    prices: dict[tuple[int, str], Any] = field(default_factory=dict)
 
 
 class FuelDataFetcher:
@@ -198,6 +228,10 @@ class InfluxDBWriter:
             _LOGGER.error("InfluxDB client not connected")
             return {}
 
+        if not is_safe_influx_identifier(self.bucket):
+            _LOGGER.error("Refusing Flux query with unsafe bucket name")
+            return {}
+
         try:
             query_api = self.client.query_api()
             
@@ -342,3 +376,138 @@ class InfluxDBWriter:
             finally:
                 self.client = None
                 self.write_api = None
+
+
+class InfluxDBReader:
+    """Reusable InfluxDB read client for web workers (avoids per-request connection pools)."""
+
+    def __init__(self):
+        self._client: Optional[InfluxDBClient] = None
+        self._sig: Optional[tuple[str, str, str]] = None
+
+    def _get_client(self, url: str, token: str, org: str) -> InfluxDBClient:
+        sig = (url, token, org)
+        if self._client is None or self._sig != sig:
+            self.close()
+            self._client = InfluxDBClient(url=url, token=token, org=org)
+            self._sig = sig
+        return self._client
+
+    def close(self):
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as exc:
+                _LOGGER.warning("Error closing InfluxDBReader client: %s", exc)
+            finally:
+                self._client = None
+                self._sig = None
+
+    def get_current_and_recent_prices(
+        self,
+        url: str,
+        token: str,
+        org: str,
+        bucket: str,
+        stations_list: list[dict],
+        lookback_days: int = 30,
+    ) -> tuple[StationPriceData, dict[tuple[int, str], list[float]]]:
+        """Fetch latest prices and up to 50 recent price points per series."""
+        data = StationPriceData()
+        last_prices: dict[tuple[int, str], list[float]] = {}
+
+        if not is_safe_influx_identifier(bucket):
+            _LOGGER.error("Refusing Flux query with unsafe bucket name")
+            return data, last_prices
+
+        discounts_by_station = {s['station_id']: s.get('discount', 0.0) for s in stations_list}
+        states_by_station = {s['station_id']: s.get('au_state', 'NSW') for s in stations_list}
+
+        client = self._get_client(url, token, org)
+        query_api = client.query_api()
+
+        query = (
+            f'from(bucket: "{bucket}")'
+            f' |> range(start: -{int(lookback_days)}d)'
+            ' |> filter(fn: (r) => r._measurement == "fuel_price")'
+            ' |> filter(fn: (r) => r._field == "price")'
+            ' |> sort(columns: ["_time"], desc: true)'
+            ' |> limit(n: 50)'
+        )
+
+        tables = query_api.query(query)
+        for table in tables:
+            for record in table.records:
+                sid = record.values.get('station_id')
+                ft = record.values.get('fuel_type')
+                price = record.get_value()
+                sname = record.values.get('station_name') or f"Station {sid}"
+                saddr = record.values.get('station_address') or ""
+
+                if sid and ft:
+                    try:
+                        sid_int = int(sid)
+                        key = (sid_int, ft)
+                        if key not in last_prices:
+                            last_prices[key] = []
+                            if sid_int not in data.stations:
+                                data.stations[sid_int] = CachedStation(
+                                    code=sid_int,
+                                    name=sname,
+                                    address=saddr,
+                                    au_state=states_by_station.get(sid_int, 'NSW'),
+                                )
+                            # InfluxDB stores discounted price; reconstruct raw price for downstream
+                            discount = discounts_by_station.get(sid_int, 0.0)
+                            raw_price = price + discount
+                            data.prices[key] = CachedPrice(sid_int, ft, raw_price, record.get_time())
+                        last_prices[key].append(price)
+                    except ValueError:
+                        pass
+
+        return data, last_prices
+
+    def get_price_history(
+        self,
+        url: str,
+        token: str,
+        org: str,
+        bucket: str,
+        days: int,
+        station_id: Optional[int] = None,
+        fuel_type: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Query historical price series with automatic downsampling on broad >30d ranges."""
+        if not is_safe_influx_identifier(bucket):
+            raise ValueError("Invalid InfluxDB bucket name")
+
+        client = self._get_client(url, token, org)
+        query_api = client.query_api()
+
+        filters = ['r._measurement == "fuel_price"']
+        if station_id is not None:
+            filters.append(f'r.station_id == "{int(station_id)}"')
+        if fuel_type:
+            filters.append(f'r.fuel_type == "{fuel_type}"')
+
+        filter_expr = ' and '.join(filters)
+        query = (
+            f'from(bucket: "{bucket}") |> range(start: -{int(days)}d)'
+            f' |> filter(fn: (r) => {filter_expr})'
+            ' |> filter(fn: (r) => r._field == "price")'
+        )
+        if days > 30 and station_id is None and not fuel_type:
+            query += ' |> aggregateWindow(every: 6h, fn: mean, createEmpty: false)'
+        query += ' |> sort(columns: ["_time"])'
+
+        tables = query_api.query(query)
+        history = []
+        for table in tables:
+            for record in table.records:
+                history.append({
+                    'time': record.get_time().isoformat(),
+                    'price': record.get_value(),
+                    'station_id': record.values.get('station_id'),
+                    'fuel_type': record.values.get('fuel_type'),
+                })
+        return history

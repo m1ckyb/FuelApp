@@ -500,37 +500,37 @@
         document.getElementById('editDiscordBtn').style.display = 'block';
     }
 
-    async function saveDiscordConfig(event) {
-        event.preventDefault();
-        
-        const formData = {
-            discord_webhook_url: document.getElementById('discord_webhook_url').value,
-            discord_price_threshold: parseFloat(document.getElementById('discord_price_threshold').value)
-        };
-        
+    async function saveConfigSection(formData, successMessage, editBtnId) {
         try {
             const response = await fetch('/api/config', {
                 method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
             });
-            
+
             if (!response.ok) {
                 const errorData = await safeParseJSON(response);
                 throw new Error(errorData.error || 'Failed to save configuration');
             }
-            
-            const data = await response.json();
-            
-            showToast('Discord configuration saved successfully', 'success');
+
+            await response.json();
+            showToast(successMessage, 'success');
             await loadConfig();
-            document.getElementById('editDiscordBtn').style.display = 'block';
+            if (editBtnId) {
+                document.getElementById(editBtnId).style.display = 'block';
+            }
         } catch (error) {
-            console.error('Error saving Discord configuration:', error);
+            console.error('Error saving configuration:', error);
             showToast(error.message, 'error');
         }
+    }
+
+    async function saveDiscordConfig(event) {
+        event.preventDefault();
+        await saveConfigSection({
+            discord_webhook_url: document.getElementById('discord_webhook_url').value,
+            discord_price_threshold: parseFloat(document.getElementById('discord_price_threshold').value)
+        }, 'Discord configuration saved successfully', 'editDiscordBtn');
     }
 
     async function testDiscordNotification() {
@@ -608,35 +608,10 @@
 
     async function saveApiConfig(event) {
         event.preventDefault();
-        
-        const formData = {
+        await saveConfigSection({
             fuel_api_client_id: document.getElementById('fuel_api_client_id').value,
             fuel_api_client_secret: document.getElementById('fuel_api_client_secret').value
-        };
-        
-        try {
-            const response = await fetch('/api/config', {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(formData)
-            });
-            
-            if (!response.ok) {
-                const errorData = await safeParseJSON(response);
-                throw new Error(errorData.error || 'Failed to save configuration');
-            }
-            
-            const data = await response.json();
-            
-            showToast('API configuration saved successfully', 'success');
-            await loadConfig();
-            document.getElementById('editApiBtn').style.display = 'block';
-        } catch (error) {
-            console.error('Error saving API configuration:', error);
-            showToast(error.message, 'error');
-        }
+        }, 'API configuration saved successfully', 'editApiBtn');
     }
     
     function editInfluxConfig() {
@@ -741,38 +716,13 @@
     
     async function saveMqttConfig(event) {
         event.preventDefault();
-        
-        const formData = {
+        await saveConfigSection({
             mqtt_broker: document.getElementById('mqtt_broker').value,
             mqtt_port: parseInt(document.getElementById('mqtt_port').value),
             mqtt_user: document.getElementById('mqtt_user').value,
             mqtt_password: document.getElementById('mqtt_password').value,
             mqtt_discovery_prefix: document.getElementById('mqtt_discovery_prefix').value
-        };
-        
-        try {
-            const response = await fetch('/api/config', {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(formData)
-            });
-            
-            if (!response.ok) {
-                const errorData = await safeParseJSON(response);
-                throw new Error(errorData.error || 'Failed to save configuration');
-            }
-            
-            const data = await response.json();
-            
-            showToast('MQTT configuration saved successfully', 'success');
-            await loadConfig();
-            document.getElementById('editMqttBtn').style.display = 'block';
-        } catch (error) {
-            console.error('Error saving MQTT configuration:', error);
-            showToast(error.message, 'error');
-        }
+        }, 'MQTT configuration saved successfully', 'editMqttBtn');
     }
 
     async function testMqttConnection() {
@@ -817,37 +767,12 @@
     
     async function saveInfluxConfig(event) {
         event.preventDefault();
-        
-        const formData = {
+        await saveConfigSection({
             influxdb_url: document.getElementById('influxdb_url').value,
             influxdb_org: document.getElementById('influxdb_org').value,
             influxdb_bucket: document.getElementById('influxdb_bucket').value,
             influxdb_token: document.getElementById('influxdb_token').value
-        };
-        
-        try {
-            const response = await fetch('/api/config', {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(formData)
-            });
-            
-            if (!response.ok) {
-                const errorData = await safeParseJSON(response);
-                throw new Error(errorData.error || 'Failed to save configuration');
-            }
-            
-            const data = await response.json();
-            
-            showToast('Configuration saved successfully', 'success');
-            await loadConfig();
-            document.getElementById('editInfluxBtn').style.display = 'block';
-        } catch (error) {
-            console.error('Error saving configuration:', error);
-            showToast(error.message, 'error');
-        }
+        }, 'Configuration saved successfully', 'editInfluxBtn');
     }
     
     function editAppSettings() {
@@ -911,38 +836,13 @@
     
     async function saveAppSettings(event) {
         event.preventDefault();
-        
-        const formData = {
+        await saveConfigSection({
             poll_interval: parseInt(document.getElementById('poll_interval').value),
             cron_schedule: document.getElementById('cron_schedule').value,
             timezone: document.getElementById('timezone').value,
             log_level: document.getElementById('log_level').value,
             webauthn_rp_id: document.getElementById('webauthn_rp_id').value
-        };
-        
-        try {
-            const response = await fetch('/api/config', {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(formData)
-            });
-            
-            if (!response.ok) {
-                const errorData = await safeParseJSON(response);
-                throw new Error(errorData.error || 'Failed to save settings');
-            }
-            
-            const data = await response.json();
-            
-            showToast('Settings saved successfully', 'success');
-            await loadConfig();
-            document.getElementById('editAppBtn').style.display = 'block';
-        } catch (error) {
-            console.error('Error saving settings:', error);
-            showToast(error.message, 'error');
-        }
+        }, 'Settings saved successfully', 'editAppBtn');
     }
 
     async function generateHACard() {

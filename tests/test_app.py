@@ -10,8 +10,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.config import Config, ConfigDatabase
-from app.data import InfluxDBWriter, StationPriceData
+from app.data import (
+    CachedPrice,
+    CachedStation,
+    InfluxDBReader,
+    InfluxDBWriter,
+    StationPriceData,
+    is_safe_influx_identifier,
+)
 from app.main import FuelApp
+from app.mqtt import MQTTClient
 from app.notifications import DiscordClient, is_valid_discord_webhook_url
 import app.web as web_module
 
@@ -292,3 +300,137 @@ def test_backup_download_and_restore_zip_slip_blocked(web_client, tmp_path):
     )
     assert r.status_code == 400
     assert "unsafe paths" in r.get_json()["error"].lower()
+
+
+# --- Extended Coverage: Flux Safety, Cross-Worker Config, Trends, History, Auth, MQTT v2 ---
+
+
+@pytest.mark.parametrize(
+    "ident,expected",
+    [
+        ("fuel_prices", True),
+        ("my-org.1", True),
+        ('fuel_prices") |> drop()', False),
+        ("bucket with spaces", False),
+        ("", False),
+    ],
+)
+def test_influx_identifier_validation(ident, expected):
+    assert is_safe_influx_identifier(ident) is expected
+
+
+def test_update_config_does_not_clobber_other_workers_and_rejects_flux_injection(web_client):
+    client, cfg = web_client
+    _create_and_login(client)
+
+    # Reject Flux injection in bucket name
+    r = client.put("/api/config", json={"influxdb_bucket": 'fuel_prices") |> yield()'})
+    assert r.status_code == 400
+
+    # Simulate another worker updating mqtt_broker directly in SQLite
+    cfg.db.set_setting("mqtt_broker", "10.0.0.99")
+    # Current worker still has stale empty cfg.mqtt_broker in memory
+    cfg.mqtt_broker = ""
+
+    # Updating an unrelated setting must NOT overwrite mqtt_broker in SQLite
+    r = client.put("/api/config", json={"discord_price_threshold": 7.5, "auth_enabled": False})
+    assert r.status_code == 200
+    assert cfg.db.get_setting("mqtt_broker") == "10.0.0.99"
+    assert cfg.db.get_setting("discord_price_threshold") == "7.5"
+    # auth_enabled cannot be disabled via API
+    assert cfg.auth_enabled is True
+
+
+def test_compute_trend_and_current_prices_includes_new_stations(web_client):
+    client, cfg = web_client
+    _create_and_login(client)
+
+    assert web_module._compute_trend(210.0, [210.0, 205.0]) == "up"
+    assert web_module._compute_trend(200.0, [200.0, 205.0]) == "down"
+    assert web_module._compute_trend(200.0, [200.0, 200.0]) == "stable"
+    assert web_module._compute_trend(200.0, []) == "unknown"
+
+    cfg.db.add_station(101, ["P98"], "NSW", 0.0, station_name="Existing Station")
+    cfg.db.add_station(202, ["E10"], "NSW", 0.0, station_name="Brand New Station")
+
+    cached = StationPriceData(
+        stations={101: CachedStation(101, "Existing Station", "1 Rd", "NSW")},
+        prices={(101, "P98"): CachedPrice(101, "P98", 220.0, None)},
+    )
+    history = {(101, "P98"): [220.0, 215.0], (0, "P98"): [220.0, 215.0]}
+
+    with patch.object(web_module.influx_reader, "get_current_and_recent_prices", return_value=(cached, history)):
+        r = client.get("/api/prices/current")
+        assert r.status_code == 200
+        payload = r.get_json()
+        by_id = {s["station_id"]: s for s in payload["prices"]}
+        assert 101 in by_id and by_id[101]["trends"]["P98"] == "up"
+        # Newly added station must still appear immediately with empty prices
+        assert 202 in by_id and by_id[202]["station_name"] == "Brand New Station"
+        assert by_id[202]["prices"] == {}
+        assert payload["average_trends"]["P98"] == "up"
+        assert "Content-Security-Policy" in r.headers
+
+
+def test_price_history_downsampling_and_validation(web_client):
+    client, _ = web_client
+    _create_and_login(client)
+
+    assert client.get("/api/prices/history?days=999").status_code == 400
+    assert client.get("/api/prices/history?fuel_type=INVALID").status_code == 400
+
+    reader = InfluxDBReader()
+    mock_client = MagicMock()
+    mock_query_api = MagicMock()
+    mock_query_api.query.return_value = []
+    mock_client.query_api.return_value = mock_query_api
+    reader._client = mock_client
+    reader._sig = ("http://localhost:8086", "tok", "org")
+
+    reader.get_price_history("http://localhost:8086", "tok", "org", "fuel_prices", days=90)
+    executed_flux = mock_query_api.query.call_args[0][0]
+    assert "aggregateWindow(every: 6h, fn: mean, createEmpty: false)" in executed_flux
+
+
+def test_update_password_and_webauthn_error_handling(web_client):
+    client, _ = web_client
+    _create_and_login(client)
+
+    # Wrong current password -> 401
+    r = client.put("/api/config/password", json={"current_password": "wrong", "new_password": "newstrongpassword"})
+    assert r.status_code == 401
+
+    # Too short -> 400
+    r = client.put("/api/config/password", json={"current_password": "strongpassword", "new_password": "short"})
+    assert r.status_code == 400
+
+    # Valid update -> 200
+    r = client.put("/api/config/password", json={"current_password": "strongpassword", "new_password": "newstrongpassword"})
+    assert r.status_code == 200
+
+    # WebAuthn login complete with expired/missing session -> 400 (never 500)
+    r = client.post("/api/webauthn/login/complete", json={"id": "abc"})
+    assert r.status_code == 400
+
+
+def test_mqtt_v2_callbacks_and_discovery(tmp_path):
+    cfg = Config(db_path=str(tmp_path / "mqtt.db"))
+    cfg.mqtt_broker = ""  # skip live socket connect
+    mqtt_client = MQTTClient(cfg)
+    mqtt_client.client = MagicMock()
+
+    ok_rc = SimpleNamespace(is_failure=False)
+    fail_rc = SimpleNamespace(is_failure=True)
+
+    mqtt_client._on_connect(mqtt_client.client, None, None, ok_rc, None)
+    assert mqtt_client.connected is True
+
+    mqtt_client.publish_discovery(350, 'Shell "Sydney"', ["P98"], "NSW")
+    mqtt_client.client.publish.assert_called_once()
+    topic, payload_str = mqtt_client.client.publish.call_args[0][:2]
+    assert topic == "homeassistant/sensor/fuelapp/fuelapp_350_P98/config"
+    assert '"name": "Shell Sydney"' in payload_str
+
+    mqtt_client._on_connect(mqtt_client.client, None, None, fail_rc, None)
+    assert mqtt_client.connected is False
+
